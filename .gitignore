@@ -1,0 +1,15 @@
+# Secrets — ห้าม commit เด็ดขาด
+.streamlit/secrets.toml
+*.json
+
+# SQLite (ไม่ใช้แล้ว แต่กันไว้)
+*.db
+backups/
+
+# Python
+__pycache__/
+*.pyc
+.env
+"*.exe" 
+"*.pdf"   
+".~lock.*" 
