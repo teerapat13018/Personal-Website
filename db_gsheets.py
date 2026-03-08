@@ -242,15 +242,18 @@ def portfolio_save(items: list):
     total_rows = len(ws.get_all_values())
     if total_rows > 1:
         ws.delete_rows(2, total_rows)
-    # เขียนใหม่
+    # เขียนใหม่ด้วย batch (1 write request แทนที่จะ N requests)
+    rows = []
     for item in items:
         if item.get("ticker"):
-            ws.append_row([
+            rows.append([
                 _new_id(),
                 item["ticker"],
                 item.get("qty", 0),
                 item.get("avg_cost", 0.0),
             ])
+    if rows:
+        ws.append_rows(rows, value_input_option="USER_ENTERED")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
