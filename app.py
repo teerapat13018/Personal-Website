@@ -779,7 +779,7 @@ def main():
             m5.metric("🕯️ Candles",     len(df))
 
             supports, resistances = find_support_resistance(df, order=sr_order)
-            # Store for Strategic Entry Planner (Tab 4)
+            # Store S/R data in session state
             st.session_state["chart_supports"]    = supports
             st.session_state["chart_ticker"]      = fetched
             st.session_state["chart_curr_price"]  = float(curr)
@@ -879,392 +879,331 @@ def main():
                 st.caption("ไม่มี active alert สำหรับหุ้นนี้")
 
 
-        else:
-            st.info("👆 กรอก Ticker แล้วกด **Update Data** เพื่อโหลดกราฟ")
-
-        # ── 🎯 Strategic Entry Planner (see below) ─────────────
-        # 🎯  Strategic Entry Planner
-        # ════════════════════════════════════════════════════════════════
-        st.divider()
-        st.markdown("## 🎯 Strategic Entry Planner")
-        st.caption(
-            "วางแผนการเข้า Position อย่าง Strategic — "
-            "เลือก Support Level · จัดสรร USD · คำนวณ Shares อัตโนมัติ"
-        )
-
-        # ── Session state from Tab 1 ───────────────────────────────────
-        _sep_chart_ticker = st.session_state.get("chart_ticker", "")
-        _sep_chart_sup    = st.session_state.get("chart_supports", [])
-        _sep_chart_price  = float(st.session_state.get("chart_curr_price", 0.0))
-
-        # ── Portfolio data ─────────────────────────────────────────────
-        _sep_port = st.session_state.get("portfolio_data", None)
-        _sep_port_val    = 0.0
-        _sep_port_labels = []
-        _sep_port_values = []
-        if _sep_port:
-            _, _sep_port_labels, _sep_port_values = _sep_port
-            _sep_port_val = float(sum(_sep_port_values))
-
-        # ── Initialise simulation basket ──────────────────────────────
-        st.session_state.setdefault("sep_sim_basket", {})
-
-        # ── Two-column layout ─────────────────────────────────────────
-        _sep_c1, _sep_c2 = st.columns([1.4, 2.2], gap="medium")
-
-        with _sep_c1:
-            st.markdown("#### 🎯 ตั้งค่า")
-
-            # ── Quick-select from portfolio ────────────────────────────
-            _port_tickers_sep = []
-            if "portfolio" in st.session_state:
-                _port_tickers_sep = [
-                    str(_r2.get("ticker", "")).strip().upper()
-                    for _r2 in st.session_state.portfolio
-                    if str(_r2.get("ticker", "")).strip()
-                ]
-
-            if _port_tickers_sep:
-                _quick_options = ["— เลือกจากพอร์ต —"] + _port_tickers_sep
-                _quick_sel = st.selectbox(
-                    "📋 จากพอร์ตของฉัน",
-                    _quick_options,
-                    key="sep_port_select",
-                    help="เลือก Ticker ที่ถืออยู่เพื่อเติมลงช่อง Ticker อัตโนมัติ",
-                )
-                if (
-                    _quick_sel != "— เลือกจากพอร์ต —"
-                    and st.session_state.get("sep_ticker_input", "") != _quick_sel
-                ):
-                    st.session_state["sep_ticker_input"] = _quick_sel
-                    st.rerun()
-
-            # ── ป้องกัน Streamlit warning: ตั้ง default ผ่าน session_state ────
-            if "sep_ticker_input" not in st.session_state:
-                st.session_state["sep_ticker_input"] = _sep_chart_ticker
-
-            _sep_ticker = st.text_input(
-                "Ticker",
-                placeholder="e.g. AAPL, LITE",
-                key="sep_ticker_input",
-            ).upper().strip()
-
-            _sep_invest = st.number_input(
-                "💵 งบลงทุนรวม (USD)",
-                min_value=1.0,
-                value=500.0,
-                step=50.0,
-                format="%.2f",
-                key="sep_invest_total",
+            # ── 🎯 Strategic Entry Planner ────────────────────────────────
+            st.divider()
+            st.markdown("## 🎯 Strategic Entry Planner")
+            st.caption(
+                "วางแผนการเข้า Position อย่าง Strategic — "
+                "เลือก Support Level · จัดสรร USD · คำนวณ Shares อัตโนมัติ"
             )
 
-            # ── Current price (จาก Tab 1 เท่านั้น) ───────────────────
-            _sep_price = 0.0
-            if _sep_ticker == _sep_chart_ticker and _sep_chart_price > 0:
-                _sep_price = _sep_chart_price
-                st.metric("💲 ราคาปัจจุบัน", f"${_sep_price:,.2f}")
+            # ── Portfolio data ─────────────────────────────────────────
+            _sep_port = st.session_state.get("portfolio_data", None)
+            _sep_port_val    = 0.0
+            _sep_port_labels = []
+            _sep_port_values = []
+            if _sep_port:
+                _, _sep_port_labels, _sep_port_values = _sep_port
+                _sep_port_val = float(sum(_sep_port_values))
 
-            # ── Add to Simulation Basket ──────────────────────────────
-            st.markdown("---")
-            if _sep_ticker and _sep_invest > 0:
-                if st.button(
-                    f"➕ เพิ่ม {_sep_ticker} → Basket",
-                    key="sep_add_basket_btn",
-                    help=f"เพิ่ม {_sep_ticker} ${_sep_invest:,.0f} เข้า Simulation Basket",
-                ):
-                    st.session_state["sep_sim_basket"][_sep_ticker] = float(_sep_invest)
-                    st.rerun()
+            # ── Initialise simulation basket ───────────────────────────
+            st.session_state.setdefault("sep_sim_basket", {})
 
-            # ── Support levels (จากกราฟหลัก Tab 1 เท่านั้น) ─────────
-            _use_tab1_sup = (
-                _sep_ticker == _sep_chart_ticker
-                and len(_sep_chart_sup) > 0
-            )
-            if _use_tab1_sup:
-                _sep_supports = list(reversed(sorted(_sep_chart_sup)))[:3]
-                st.success(
-                    "✅ Support จากกราฟ: "
-                    + ", ".join([f"${s:,.2f}" for s in _sep_supports])
-                )
-            else:
-                # ── กรณี ticker ไม่ตรงกับกราฟ หรือยังไม่โหลดกราฟ ───
-                if _sep_chart_ticker and _sep_ticker != _sep_chart_ticker:
-                    st.warning(
-                        f"⚠️ กราฟปัจจุบันคือ **{_sep_chart_ticker}**  \n"
-                        f"ไปแท็บ **📊 Chart & Analysis** แล้วกด **Update Data** "
-                        f"สำหรับ **{_sep_ticker}** เพื่อดึง Support อัตโนมัติ"
-                    )
-                elif not _sep_chart_ticker:
-                    st.info(
-                        "ℹ️ ไปแท็บ **📊 Chart & Analysis** กรอก Ticker "
-                        "แล้วกด **Update Data** ก่อน"
-                    )
+            # ── Two-column layout ──────────────────────────────────────
+            _sep_c1, _sep_c2 = st.columns([1.4, 2.2], gap="medium")
 
-                st.markdown("**📍 หรือกำหนด Support Levels เอง**")
-                _m_s1 = st.number_input(
-                    "Support 1 ($)", min_value=0.0, value=0.0,
-                    step=0.5, format="%.2f", key="sep_ms1",
-                )
-                _m_s2 = st.number_input(
-                    "Support 2 ($)", min_value=0.0, value=0.0,
-                    step=0.5, format="%.2f", key="sep_ms2",
-                )
-                _m_s3 = st.number_input(
-                    "Support 3 ($)", min_value=0.0, value=0.0,
-                    step=0.5, format="%.2f", key="sep_ms3",
-                )
-                _sep_supports = sorted(
-                    [s for s in [_m_s1, _m_s2, _m_s3] if s > 0],
-                    reverse=True,
+            with _sep_c1:
+                st.markdown("#### 🎯 ตั้งค่า")
+
+                # ── Ticker & Price from chart (no separate input) ──────
+                _sep_ticker = fetched
+                _cinfo1, _cinfo2 = st.columns(2)
+                _cinfo1.metric("📌 Ticker", _sep_ticker)
+                _cinfo2.metric("💲 ราคา", f"${float(curr):,.2f}")
+
+                _sep_invest = st.number_input(
+                    "💵 งบลงทุนรวม (USD)",
+                    min_value=1.0,
+                    value=500.0,
+                    step=50.0,
+                    format="%.2f",
+                    key="sep_invest_total",
                 )
 
-        # ── Centre column: Order Slicing ───────────────────────────────
-        with _sep_c2:
-            st.markdown("#### 📊 จัดสรรงบตาม Support Levels")
-            _sep_allocs = []  # (support_price, usd_amount, shares)
-
-            if _sep_supports:
-                _num_levels = len(_sep_supports[:3])
-                for _si, _sup in enumerate(_sep_supports[:3]):
-                    _sk = f"sep_usd_{_si}"
-                    st.session_state.setdefault(
-                        _sk, round(_sep_invest / _num_levels, 2)
-                    )
-                    _rc_a, _rc_b, _rc_c = st.columns([1.1, 1.6, 1.3])
-                    with _rc_a:
-                        st.markdown(f"**Level {_si+1}**  \n`${_sup:,.2f}`")
-                    with _rc_b:
-                        _usd_in = st.number_input(
-                            f"USD Lv{_si+1}",
-                            min_value=0.0,
-                            value=float(st.session_state[_sk]),
-                            step=10.0,
-                            format="%.2f",
-                            label_visibility="collapsed",
-                            key=_sk,
-                        )
-                    with _rc_c:
-                        if _sup > 0 and _usd_in > 0:
-                            _sh = _usd_in / _sup
-                            st.markdown(f"**{_sh:.4f}** sh")
-                        else:
-                            _sh = 0.0
-                            st.markdown("—")
-                    _sep_allocs.append((_sup, _usd_in, _sh))
-
-                _total_usd    = sum(a[1] for a in _sep_allocs)
-                _total_shares = sum(a[2] for a in _sep_allocs)
-                _is_valid     = _total_usd <= _sep_invest + 0.01
-
+                # ── Add to Simulation Basket ───────────────────────────
                 st.markdown("---")
-                _va, _vb, _vc = st.columns(3)
-                _va.metric("💵 จัดสรรแล้ว",  f"${_total_usd:,.2f}")
-                _vb.metric("🎯 งบรวม",       f"${_sep_invest:,.2f}")
-                _vc.metric("📦 Total Shares", f"{_total_shares:.4f}")
-
-                if not _is_valid:
-                    st.error(
-                        f"⚠️ จัดสรรเกินงบ! "
-                        f"${_total_usd:,.2f} > ${_sep_invest:,.2f}"
-                    )
-                elif _total_usd > 0:
-                    st.success(f"✅ งบคงเหลือ: ${_sep_invest - _total_usd:,.2f}")
-
-                _valid_allocs = [(p, u, s) for p, u, s in _sep_allocs if u > 0]
-                if _valid_allocs:
-                    st.markdown("**📋 Summary**")
-                    _sum_df = pd.DataFrame([
-                        {
-                            "Support Price": f"${p:,.2f}",
-                            "USD to Spend":  f"${u:,.2f}",
-                            "Target Shares": f"{s:.4f}",
-                        }
-                        for p, u, s in _valid_allocs
-                    ])
-                    st.dataframe(_sum_df, hide_index=True, use_container_width=True)
-
-                    if _sep_ticker and _is_valid:
-                        if st.button(
-                            "💾 Add to Planned Trades",
-                            key="sep_add_btn",
-                            type="primary",
-                        ):
-                            for _sp, _su, _ssh in _valid_allocs:
-                                pt_add(_sep_ticker, _sp, _su, _ssh)
-                            st.success(
-                                f"✅ บันทึก {len(_valid_allocs)} รายการ "
-                                f"สำหรับ {_sep_ticker}"
-                            )
-                            st.rerun()
-            else:
-                st.info(
-                    "👈 ไปแท็บ **📊 Chart & Analysis** โหลดกราฟ Ticker นี้ก่อน "
-                    "หรือกำหนด Support Levels เองด้านซ้าย"
-                )
-
-        # ── Portfolio Impact Simulation (multi-stock basket) ──────────
-        if _sep_port_val > 0:
-            st.markdown("---")
-            st.markdown("#### 📊 Portfolio Impact Simulation")
-            _basket = st.session_state["sep_sim_basket"]
-
-            _bh1, _bh2 = st.columns([3, 1])
-            with _bh1:
-                st.caption(
-                    "🛒 **Simulation Basket** — "
-                    "เพิ่มหุ้นหลายตัวเพื่อดูผลกระทบต่อ Portfolio รวม"
-                )
-            with _bh2:
-                if _basket:
-                    if st.button("🧹 Clear Basket", key="sep_clear_basket_btn"):
-                        st.session_state["sep_sim_basket"] = {}
+                if _sep_ticker and _sep_invest > 0:
+                    if st.button(
+                        f"➕ เพิ่ม {_sep_ticker} → Basket",
+                        key="sep_add_basket_btn",
+                        help=f"เพิ่ม {_sep_ticker} ${_sep_invest:,.0f} เข้า Simulation Basket",
+                    ):
+                        st.session_state["sep_sim_basket"][_sep_ticker] = float(_sep_invest)
                         st.rerun()
 
-            if _basket:
-                _bk_hdr = st.columns([2, 2, 0.8])
-                _bk_hdr[0].caption("**Ticker**")
-                _bk_hdr[1].caption("**USD**")
-                _bk_hdr[2].caption("**ลบ**")
-                _to_remove_ = None
-                for _bt_, _bv_ in list(_basket.items()):
-                    _bc1_, _bc2_, _bc3_ = st.columns([2, 2, 0.8])
-                    _bc1_.markdown(f"`{_bt_}`")
-                    _bc2_.markdown(f"${_bv_:,.2f}")
-                    with _bc3_:
-                        if st.button("🗑️", key=f"sep_rm_{_bt_}"):
-                            _to_remove_ = _bt_
-                if _to_remove_:
-                    del st.session_state["sep_sim_basket"][_to_remove_]
-                    st.rerun()
-
-                # Build simulated portfolio
-                _cur_labels = list(_sep_port_labels)
-                _cur_vals   = [float(v) for v in _sep_port_values]
-                _cur_total  = float(sum(_cur_vals))
-                _cur_dict   = {
-                    str(l).upper(): float(v)
-                    for l, v in zip(_cur_labels, _cur_vals)
-                }
-                _sim_dict_: dict = dict(_cur_dict)
-                for _bt_, _bv_ in _basket.items():
-                    _sim_dict_[_bt_] = _sim_dict_.get(_bt_, 0.0) + float(_bv_)
-                _sim_total_ = float(sum(_sim_dict_.values()))
-
-                # ── Shared pie style helper ────────────────────────────
-                _pie_layout = dict(
-                    template="plotly_dark",
-                    paper_bgcolor="#0e1117",
-                    plot_bgcolor="#0e1117",
-                    height=300,
-                    margin=dict(t=32, b=72, l=8, r=8),
-                    showlegend=True,
-                    legend=dict(
-                        orientation="h",
-                        y=-0.18,
-                        x=0.5,
-                        xanchor="center",
-                        font=dict(size=9, color="#c9d1d9"),
-                        itemwidth=40,
-                    ),
-                )
-
-                _sim_pc1, _sim_pc2 = st.columns(2)
-
-                with _sim_pc1:
-                    st.markdown(
-                        "<p style='text-align:center;color:#8b949e;"
-                        "font-size:13px;margin-bottom:4px'>ก่อน (Current)</p>",
-                        unsafe_allow_html=True,
+                # ── Support levels from chart ──────────────────────────
+                if supports:
+                    _sep_supports = list(reversed(sorted(supports)))[:3]
+                    st.success(
+                        "✅ Support จากกราฟ: "
+                        + ", ".join([f"${s:,.2f}" for s in _sep_supports])
                     )
-                    _fig_bef_ = go.Figure(go.Pie(
-                        labels=_cur_labels,
-                        values=_cur_vals,
-                        hole=0.42,
-                        sort=True,
-                        direction="clockwise",
-                        textinfo="percent",
-                        textposition="inside",
-                        textfont=dict(size=10, color="white"),
-                        hovertemplate=(
-                            "<b>%{label}</b><br>"
-                            "%{percent:.1%}<br>"
-                            "$%{value:,.0f}"
-                            "<extra></extra>"
-                        ),
-                        marker=dict(line=dict(color="#0e1117", width=1.5)),
-                    ))
-                    _fig_bef_.update_layout(**_pie_layout)
-                    st.plotly_chart(_fig_bef_, use_container_width=True)
-
-                with _sim_pc2:
-                    st.markdown(
-                        "<p style='text-align:center;color:#8b949e;"
-                        "font-size:13px;margin-bottom:4px'>หลัง (Simulated)</p>",
-                        unsafe_allow_html=True,
+                else:
+                    st.info("ℹ️ ไม่พบ Support จากกราฟ — กรอกเองด้านล่าง")
+                    _m_s1 = st.number_input(
+                        "Support 1 ($)", min_value=0.0, value=0.0,
+                        step=0.5, format="%.2f", key="sep_ms1",
                     )
-                    _sim_labels_ = list(_sim_dict_.keys())
-                    _sim_vals_   = list(_sim_dict_.values())
-                    _fig_aft_ = go.Figure(go.Pie(
-                        labels=_sim_labels_,
-                        values=_sim_vals_,
-                        hole=0.42,
-                        sort=True,
-                        direction="clockwise",
-                        textinfo="percent",
-                        textposition="inside",
-                        textfont=dict(size=10, color="white"),
-                        hovertemplate=(
-                            "<b>%{label}</b><br>"
-                            "%{percent:.1%}<br>"
-                            "$%{value:,.0f}"
-                            "<extra></extra>"
-                        ),
-                        marker=dict(line=dict(color="#0e1117", width=1.5)),
-                    ))
-                    _fig_aft_.update_layout(**_pie_layout)
-                    st.plotly_chart(_fig_aft_, use_container_width=True)
+                    _m_s2 = st.number_input(
+                        "Support 2 ($)", min_value=0.0, value=0.0,
+                        step=0.5, format="%.2f", key="sep_ms2",
+                    )
+                    _m_s3 = st.number_input(
+                        "Support 3 ($)", min_value=0.0, value=0.0,
+                        step=0.5, format="%.2f", key="sep_ms3",
+                    )
+                    _sep_supports = sorted(
+                        [s for s in [_m_s1, _m_s2, _m_s3] if s > 0],
+                        reverse=True,
+                    )
 
-                # Summary metrics
-                _basket_total_ = float(sum(_basket.values()))
-                _sm1, _sm2, _sm3 = st.columns(3)
-                _sm1.metric("🛒 Basket รวม",     f"${_basket_total_:,.2f}")
-                _sm2.metric("📦 Portfolio ก่อน", f"${_cur_total:,.2f}")
-                _sm3.metric("📦 Portfolio หลัง", f"${_sim_total_:,.2f}")
+            # ── Right column: Order Slicing ────────────────────────────
+            with _sep_c2:
+                st.markdown("#### 📊 จัดสรรงบตาม Support Levels")
+                _sep_allocs = []  # (support_price, usd_amount, shares)
 
-                # Overweight warnings
-                for _tk_, _av_ in _sim_dict_.items():
-                    _aw_ = _av_ / _sim_total_ * 100 if _sim_total_ else 0.0
-                    if _aw_ > 20:
-                        st.warning(
-                            f"⚠️ {_tk_} จะมีน้ำหนัก **{_aw_:.1f}%** "
-                            f"ใน Portfolio — สูงกว่า 20% threshold"
+                if _sep_supports:
+                    _num_levels = len(_sep_supports[:3])
+                    for _si, _sup in enumerate(_sep_supports[:3]):
+                        _sk = f"sep_usd_{_si}"
+                        st.session_state.setdefault(
+                            _sk, round(_sep_invest / _num_levels, 2)
                         )
+                        _rc_a, _rc_b, _rc_c = st.columns([1.1, 1.6, 1.3])
+                        with _rc_a:
+                            st.markdown(f"**Level {_si+1}**  \n`${_sup:,.2f}`")
+                        with _rc_b:
+                            _usd_in = st.number_input(
+                                f"USD Lv{_si+1}",
+                                min_value=0.0,
+                                value=float(st.session_state[_sk]),
+                                step=10.0,
+                                format="%.2f",
+                                label_visibility="collapsed",
+                                key=_sk,
+                            )
+                        with _rc_c:
+                            if _sup > 0 and _usd_in > 0:
+                                _sh = _usd_in / _sup
+                                st.markdown(f"**{_sh:.4f}** sh")
+                            else:
+                                _sh = 0.0
+                                st.markdown("—")
+                        _sep_allocs.append((_sup, _usd_in, _sh))
+
+                    _total_usd    = sum(a[1] for a in _sep_allocs)
+                    _total_shares = sum(a[2] for a in _sep_allocs)
+                    _is_valid     = _total_usd <= _sep_invest + 0.01
+
+                    st.markdown("---")
+                    _va, _vb, _vc = st.columns(3)
+                    _va.metric("💵 จัดสรรแล้ว",  f"${_total_usd:,.2f}")
+                    _vb.metric("🎯 งบรวม",       f"${_sep_invest:,.2f}")
+                    _vc.metric("📦 Total Shares", f"{_total_shares:.4f}")
+
+                    if not _is_valid:
+                        st.error(
+                            f"⚠️ จัดสรรเกินงบ! "
+                            f"${_total_usd:,.2f} > ${_sep_invest:,.2f}"
+                        )
+                    elif _total_usd > 0:
+                        st.success(f"✅ งบคงเหลือ: ${_sep_invest - _total_usd:,.2f}")
+
+                    _valid_allocs = [(p, u, s) for p, u, s in _sep_allocs if u > 0]
+                    if _valid_allocs:
+                        st.markdown("**📋 Summary**")
+                        _sum_df = pd.DataFrame([
+                            {
+                                "Support Price": f"${p:,.2f}",
+                                "USD to Spend":  f"${u:,.2f}",
+                                "Target Shares": f"{s:.4f}",
+                            }
+                            for p, u, s in _valid_allocs
+                        ])
+                        st.dataframe(_sum_df, hide_index=True, use_container_width=True)
+
+                        if _sep_ticker and _is_valid:
+                            if st.button(
+                                "💾 Add to Planned Trades",
+                                key="sep_add_btn",
+                                type="primary",
+                            ):
+                                for _sp, _su, _ssh in _valid_allocs:
+                                    pt_add(_sep_ticker, _sp, _su, _ssh)
+                                st.success(
+                                    f"✅ บันทึก {len(_valid_allocs)} รายการ "
+                                    f"สำหรับ {_sep_ticker}"
+                                )
+                                st.rerun()
+                else:
+                    st.info("👈 ลด S/R Sensitivity หรือกรอก Support Levels เองด้านซ้าย")
+
+            # ── Portfolio Impact Simulation (multi-stock basket) ───────
+            if _sep_port_val > 0:
+                st.markdown("---")
+                st.markdown("#### 📊 Portfolio Impact Simulation")
+                _basket = st.session_state["sep_sim_basket"]
+
+                _bh1, _bh2 = st.columns([3, 1])
+                with _bh1:
+                    st.caption(
+                        "🛒 **Simulation Basket** — "
+                        "เพิ่มหุ้นหลายตัวเพื่อดูผลกระทบต่อ Portfolio รวม"
+                    )
+                with _bh2:
+                    if _basket:
+                        if st.button("🧹 Clear Basket", key="sep_clear_basket_btn"):
+                            st.session_state["sep_sim_basket"] = {}
+                            st.rerun()
+
+                if _basket:
+                    _bk_hdr = st.columns([2, 2, 0.8])
+                    _bk_hdr[0].caption("**Ticker**")
+                    _bk_hdr[1].caption("**USD**")
+                    _bk_hdr[2].caption("**ลบ**")
+                    _to_remove_ = None
+                    for _bt_, _bv_ in list(_basket.items()):
+                        _bc1_, _bc2_, _bc3_ = st.columns([2, 2, 0.8])
+                        _bc1_.markdown(f"`{_bt_}`")
+                        _bc2_.markdown(f"${_bv_:,.2f}")
+                        with _bc3_:
+                            if st.button("🗑️", key=f"sep_rm_{_bt_}"):
+                                _to_remove_ = _bt_
+                    if _to_remove_:
+                        del st.session_state["sep_sim_basket"][_to_remove_]
+                        st.rerun()
+
+                    # Build simulated portfolio
+                    _cur_labels = list(_sep_port_labels)
+                    _cur_vals   = [float(v) for v in _sep_port_values]
+                    _cur_total  = float(sum(_cur_vals))
+                    _cur_dict   = {
+                        str(l).upper(): float(v)
+                        for l, v in zip(_cur_labels, _cur_vals)
+                    }
+                    _sim_dict_: dict = dict(_cur_dict)
+                    for _bt_, _bv_ in _basket.items():
+                        _sim_dict_[_bt_] = _sim_dict_.get(_bt_, 0.0) + float(_bv_)
+                    _sim_total_ = float(sum(_sim_dict_.values()))
+
+                    # ── Shared pie style helper ────────────────────────
+                    _pie_layout = dict(
+                        template="plotly_dark",
+                        paper_bgcolor="#0e1117",
+                        plot_bgcolor="#0e1117",
+                        height=300,
+                        margin=dict(t=32, b=72, l=8, r=8),
+                        showlegend=True,
+                        legend=dict(
+                            orientation="h",
+                            y=-0.18,
+                            x=0.5,
+                            xanchor="center",
+                            font=dict(size=9, color="#c9d1d9"),
+                            itemwidth=40,
+                        ),
+                    )
+
+                    _sim_pc1, _sim_pc2 = st.columns(2)
+
+                    with _sim_pc1:
+                        st.markdown(
+                            "<p style='text-align:center;color:#8b949e;"
+                            "font-size:13px;margin-bottom:4px'>ก่อน (Current)</p>",
+                            unsafe_allow_html=True,
+                        )
+                        _fig_bef_ = go.Figure(go.Pie(
+                            labels=_cur_labels,
+                            values=_cur_vals,
+                            hole=0.42,
+                            sort=True,
+                            direction="clockwise",
+                            textinfo="percent",
+                            textposition="inside",
+                            textfont=dict(size=10, color="white"),
+                            hovertemplate=(
+                                "<b>%{label}</b><br>"
+                                "%{percent:.1%}<br>"
+                                "$%{value:,.0f}"
+                                "<extra></extra>"
+                            ),
+                            marker=dict(line=dict(color="#0e1117", width=1.5)),
+                        ))
+                        _fig_bef_.update_layout(**_pie_layout)
+                        st.plotly_chart(_fig_bef_, use_container_width=True)
+
+                    with _sim_pc2:
+                        st.markdown(
+                            "<p style='text-align:center;color:#8b949e;"
+                            "font-size:13px;margin-bottom:4px'>หลัง (Simulated)</p>",
+                            unsafe_allow_html=True,
+                        )
+                        _sim_labels_ = list(_sim_dict_.keys())
+                        _sim_vals_   = list(_sim_dict_.values())
+                        _fig_aft_ = go.Figure(go.Pie(
+                            labels=_sim_labels_,
+                            values=_sim_vals_,
+                            hole=0.42,
+                            sort=True,
+                            direction="clockwise",
+                            textinfo="percent",
+                            textposition="inside",
+                            textfont=dict(size=10, color="white"),
+                            hovertemplate=(
+                                "<b>%{label}</b><br>"
+                                "%{percent:.1%}<br>"
+                                "$%{value:,.0f}"
+                                "<extra></extra>"
+                            ),
+                            marker=dict(line=dict(color="#0e1117", width=1.5)),
+                        ))
+                        _fig_aft_.update_layout(**_pie_layout)
+                        st.plotly_chart(_fig_aft_, use_container_width=True)
+
+                    # Summary metrics
+                    _basket_total_ = float(sum(_basket.values()))
+                    _sm1, _sm2, _sm3 = st.columns(3)
+                    _sm1.metric("🛒 Basket รวม",     f"${_basket_total_:,.2f}")
+                    _sm2.metric("📦 Portfolio ก่อน", f"${_cur_total:,.2f}")
+                    _sm3.metric("📦 Portfolio หลัง", f"${_sim_total_:,.2f}")
+
+                    # Overweight warnings
+                    for _tk_, _av_ in _sim_dict_.items():
+                        _aw_ = _av_ / _sim_total_ * 100 if _sim_total_ else 0.0
+                        if _aw_ > 20:
+                            st.warning(
+                                f"⚠️ {_tk_} จะมีน้ำหนัก **{_aw_:.1f}%** "
+                                f"ใน Portfolio — สูงกว่า 20% threshold"
+                            )
+                else:
+                    st.info(
+                        "กด **➕ เพิ่ม [Ticker] → Basket** ด้านบน "
+                        "เพื่อเพิ่มหุ้นลง Basket และดูผลกระทบต่อ Portfolio"
+                    )
+
+            # ── Planned Trades Log ─────────────────────────────────────
+            st.markdown("---")
+            st.markdown("#### 📋 Planned Trades Log")
+            _pt_df = pt_load()
+            if not _pt_df.empty:
+                _pt_disp = _pt_df.rename(columns={
+                    "id": "ID", "ticker": "Ticker",
+                    "support_price": "Support ($)",
+                    "usd_amount": "USD", "shares": "Shares",
+                    "created_at": "Created",
+                })
+                st.dataframe(_pt_disp, hide_index=True, use_container_width=True)
+                if st.button("🗑️ Clear All Planned Trades", key="pt_clear_all"):
+                    pt_clear()
+                    st.rerun()
             else:
                 st.info(
-                    "กด **➕ เพิ่ม [Ticker] → Basket** ด้านซ้าย "
-                    "เพื่อเพิ่มหุ้นลง Basket และดูผลกระทบต่อ Portfolio"
+                    "ยังไม่มี Planned Trades — "
+                    "กรอกแผนด้านบนแล้วกด 'Add to Planned Trades'"
                 )
 
-        # ── Planned Trades Log ────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("#### 📋 Planned Trades Log")
-        _pt_df = pt_load()
-        if not _pt_df.empty:
-            _pt_disp = _pt_df.rename(columns={
-                "id": "ID", "ticker": "Ticker",
-                "support_price": "Support ($)",
-                "usd_amount": "USD", "shares": "Shares",
-                "created_at": "Created",
-            })
-            st.dataframe(_pt_disp, hide_index=True, use_container_width=True)
-            if st.button("🗑️ Clear All Planned Trades", key="pt_clear_all"):
-                pt_clear()
-                st.rerun()
         else:
-            st.info(
-                "ยังไม่มี Planned Trades — "
-                "กรอกแผนด้านบนแล้วกด 'Add to Planned Trades'"
-            )
+            st.info("👆 กรอก Ticker แล้วกด **Update Data** เพื่อโหลดกราฟ")
 
     # ════════════════════════════════════════════════════════════════════════
 
@@ -1573,7 +1512,7 @@ def main():
         # ════════════════════════════════════
         with tab_diary:
             st.markdown("## 📔 Investment Diary")
-            st.caption("จดบันทึกเหตุผลการเทรด — บันทึกใน SQLite (ไม่หาย)")
+            st.caption("จดบันทึกเหตุผลการเทรด — บันทึกใน Google Sheets (ไม่หาย)")
 
             col_form, col_hist = st.columns([1, 1.2])
 
