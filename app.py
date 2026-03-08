@@ -99,6 +99,8 @@ from db_gsheets import (
     portfolio_load, portfolio_save,
     wl_add, wl_load, wl_delete,
     pt_add, pt_load, pt_clear,
+    etf_holdings_load, etf_holdings_save,
+    rebalancing_load, rebalancing_save,
 )
 
 
