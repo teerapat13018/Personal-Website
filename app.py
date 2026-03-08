@@ -909,25 +909,8 @@ def main():
         # ── Initialise simulation basket ──────────────────────────────
         st.session_state.setdefault("sep_sim_basket", {})
 
-        # ── Pre-fetch chart for Tab-1 ticker (silent, no button needed) ─
-        _sep_ticker_pre = str(
-            st.session_state.get("sep_ticker_input", _sep_chart_ticker or "")
-        ).upper().strip()
-        if _sep_ticker_pre:
-            _sep_pre_key = f"sep_df_{_sep_ticker_pre}"
-            if (
-                _sep_pre_key not in st.session_state
-                and _sep_ticker_pre == _sep_chart_ticker
-            ):
-                try:
-                    _pd_ = yf.Ticker(_sep_ticker_pre).history(period="3mo")
-                    if not _pd_.empty:
-                        st.session_state[_sep_pre_key] = _pd_
-                except Exception:
-                    pass
-
-        # ── Three-column layout ───────────────────────────────────────
-        _sep_c1, _sep_c2, _sep_c3 = st.columns([1.1, 1.5, 1.8], gap="medium")
+        # ── Two-column layout ─────────────────────────────────────────
+        _sep_c1, _sep_c2 = st.columns([1.4, 2.2], gap="medium")
 
         with _sep_c1:
             st.markdown("#### 🎯 ตั้งค่า")
@@ -956,9 +939,12 @@ def main():
                     st.session_state["sep_ticker_input"] = _quick_sel
                     st.rerun()
 
+            # ── ป้องกัน Streamlit warning: ตั้ง default ผ่าน session_state ────
+            if "sep_ticker_input" not in st.session_state:
+                st.session_state["sep_ticker_input"] = _sep_chart_ticker
+
             _sep_ticker = st.text_input(
                 "Ticker",
-                value=_sep_chart_ticker,
                 placeholder="e.g. AAPL, LITE",
                 key="sep_ticker_input",
             ).upper().strip()
@@ -972,48 +958,11 @@ def main():
                 key="sep_invest_total",
             )
 
-            # ── Chart fetch / refresh button ──────────────────────────
-            _sep_df_key = f"sep_df_{_sep_ticker}" if _sep_ticker else None
-            if _sep_ticker:
-                if _sep_df_key not in st.session_state:
-                    if st.button(
-                        f"📊 โหลดกราฟ {_sep_ticker}",
-                        key="sep_fetch_chart_btn",
-                    ):
-                        with st.spinner(f"กำลังโหลด {_sep_ticker}…"):
-                            try:
-                                _nd_ = yf.Ticker(_sep_ticker).history(period="3mo")
-                                if not _nd_.empty:
-                                    st.session_state[_sep_df_key] = _nd_
-                                else:
-                                    st.warning("ไม่พบข้อมูล")
-                            except Exception as _fe_:
-                                st.error(f"โหลดไม่ได้: {_fe_}")
-                        st.rerun()
-                else:
-                    if st.button(
-                        "🔄 รีเฟรชกราฟ",
-                        key="sep_refresh_chart_btn",
-                        help="โหลดข้อมูลกราฟใหม่",
-                    ):
-                        try:
-                            _rd_ = yf.Ticker(_sep_ticker).history(period="3mo")
-                            if not _rd_.empty:
-                                st.session_state[_sep_df_key] = _rd_
-                        except Exception:
-                            pass
-                        st.rerun()
-
-            # ── Current price ─────────────────────────────────────────
+            # ── Current price (จาก Tab 1 เท่านั้น) ───────────────────
             _sep_price = 0.0
             if _sep_ticker == _sep_chart_ticker and _sep_chart_price > 0:
                 _sep_price = _sep_chart_price
                 st.metric("💲 ราคาปัจจุบัน", f"${_sep_price:,.2f}")
-            elif _sep_df_key and _sep_df_key in st.session_state:
-                _pdf_ = st.session_state[_sep_df_key]
-                if not _pdf_.empty:
-                    _sep_price = float(_pdf_["Close"].iloc[-1])
-                    st.metric("💲 ราคาปัจจุบัน", f"${_sep_price:,.2f}")
 
             # ── Add to Simulation Basket ──────────────────────────────
             st.markdown("---")
@@ -1026,7 +975,7 @@ def main():
                     st.session_state["sep_sim_basket"][_sep_ticker] = float(_sep_invest)
                     st.rerun()
 
-            # ── Support levels ────────────────────────────────────────
+            # ── Support levels (จากกราฟหลัก Tab 1 เท่านั้น) ─────────
             _use_tab1_sup = (
                 _sep_ticker == _sep_chart_ticker
                 and len(_sep_chart_sup) > 0
@@ -1034,43 +983,40 @@ def main():
             if _use_tab1_sup:
                 _sep_supports = list(reversed(sorted(_sep_chart_sup)))[:3]
                 st.success(
-                    "✅ Support จาก Tab 1: "
+                    "✅ Support จากกราฟ: "
                     + ", ".join([f"${s:,.2f}" for s in _sep_supports])
                 )
             else:
-                # Auto-detect from cached chart data
-                _auto_sups_ = []
-                if _sep_df_key and _sep_df_key in st.session_state:
-                    try:
-                        _raw_sdf_ = st.session_state[_sep_df_key]
-                        _auto_raw_, _ = find_support_resistance(_raw_sdf_, order=5)
-                        _auto_sups_ = list(reversed(sorted(_auto_raw_)))[:3]
-                    except Exception:
-                        _auto_sups_ = []
-                if _auto_sups_:
-                    _sep_supports = _auto_sups_
+                # ── กรณี ticker ไม่ตรงกับกราฟ หรือยังไม่โหลดกราฟ ───
+                if _sep_chart_ticker and _sep_ticker != _sep_chart_ticker:
+                    st.warning(
+                        f"⚠️ กราฟปัจจุบันคือ **{_sep_chart_ticker}**  \n"
+                        f"ไปแท็บ **📊 Chart & Analysis** แล้วกด **Update Data** "
+                        f"สำหรับ **{_sep_ticker}** เพื่อดึง Support อัตโนมัติ"
+                    )
+                elif not _sep_chart_ticker:
                     st.info(
-                        "📍 Support อัตโนมัติ: "
-                        + ", ".join([f"${s:,.2f}" for s in _sep_supports])
+                        "ℹ️ ไปแท็บ **📊 Chart & Analysis** กรอก Ticker "
+                        "แล้วกด **Update Data** ก่อน"
                     )
-                else:
-                    st.markdown("**📍 กำหนด Support Levels เอง**")
-                    _m_s1 = st.number_input(
-                        "Support 1 ($)", min_value=0.0, value=0.0,
-                        step=0.5, format="%.2f", key="sep_ms1",
-                    )
-                    _m_s2 = st.number_input(
-                        "Support 2 ($)", min_value=0.0, value=0.0,
-                        step=0.5, format="%.2f", key="sep_ms2",
-                    )
-                    _m_s3 = st.number_input(
-                        "Support 3 ($)", min_value=0.0, value=0.0,
-                        step=0.5, format="%.2f", key="sep_ms3",
-                    )
-                    _sep_supports = sorted(
-                        [s for s in [_m_s1, _m_s2, _m_s3] if s > 0],
-                        reverse=True,
-                    )
+
+                st.markdown("**📍 หรือกำหนด Support Levels เอง**")
+                _m_s1 = st.number_input(
+                    "Support 1 ($)", min_value=0.0, value=0.0,
+                    step=0.5, format="%.2f", key="sep_ms1",
+                )
+                _m_s2 = st.number_input(
+                    "Support 2 ($)", min_value=0.0, value=0.0,
+                    step=0.5, format="%.2f", key="sep_ms2",
+                )
+                _m_s3 = st.number_input(
+                    "Support 3 ($)", min_value=0.0, value=0.0,
+                    step=0.5, format="%.2f", key="sep_ms3",
+                )
+                _sep_supports = sorted(
+                    [s for s in [_m_s1, _m_s2, _m_s3] if s > 0],
+                    reverse=True,
+                )
 
         # ── Centre column: Order Slicing ───────────────────────────────
         with _sep_c2:
@@ -1152,60 +1098,9 @@ def main():
                             st.rerun()
             else:
                 st.info(
-                    "👈 กรอก Support Levels ที่ฝั่งซ้าย "
-                    "หรือกด '📊 โหลดกราฟ' เพื่อดึง Support อัตโนมัติ"
+                    "👈 ไปแท็บ **📊 Chart & Analysis** โหลดกราฟ Ticker นี้ก่อน "
+                    "หรือกำหนด Support Levels เองด้านซ้าย"
                 )
-
-        # ── Right column: Candlestick Chart + Support Lines ────────────
-        with _sep_c3:
-            st.markdown("#### 📈 กราฟ 3 เดือน + แนวรับ")
-            if _sep_df_key and _sep_df_key in st.session_state:
-                _cdf_ = st.session_state[_sep_df_key].copy().tail(60)
-                _chart_draw_sups = (
-                    _sep_chart_sup[:3] if _use_tab1_sup else _sep_supports[:3]
-                )
-                _fig_mini = go.Figure()
-                _fig_mini.add_trace(go.Candlestick(
-                    x=_cdf_.index,
-                    open=_cdf_["Open"],
-                    high=_cdf_["High"],
-                    low=_cdf_["Low"],
-                    close=_cdf_["Close"],
-                    name=_sep_ticker,
-                    increasing_line_color="#26a69a",
-                    decreasing_line_color="#ef5350",
-                ))
-                _sup_clrs = ["#fbbf24", "#f59e0b", "#d97706"]
-                for _ci_, _sv_ in enumerate(_chart_draw_sups[:3]):
-                    _fig_mini.add_hline(
-                        y=float(_sv_),
-                        line_dash="dash",
-                        line_color=_sup_clrs[_ci_],
-                        line_width=1.5,
-                        annotation_text=f"S{_ci_+1} ${_sv_:,.2f}",
-                        annotation_position="top right",
-                        annotation_font_color=_sup_clrs[_ci_],
-                        annotation_font_size=10,
-                    )
-                _fig_mini.update_layout(
-                    template="plotly_dark",
-                    paper_bgcolor="#0e1117",
-                    plot_bgcolor="#161b22",
-                    height=340,
-                    margin=dict(t=10, b=10, l=10, r=90),
-                    xaxis_rangeslider_visible=False,
-                    xaxis=dict(showgrid=False, type="date"),
-                    yaxis=dict(showgrid=True, gridcolor="#1e2530"),
-                    showlegend=False,
-                )
-                st.plotly_chart(_fig_mini, use_container_width=True)
-            elif _sep_ticker:
-                st.info(
-                    "📊 กด **โหลดกราฟ** ด้านซ้าย "
-                    "เพื่อดูกราฟ Candlestick + แนวรับ"
-                )
-            else:
-                st.caption("กรอก Ticker เพื่อดูกราฟ")
 
         # ── Portfolio Impact Simulation (multi-stock basket) ──────────
         if _sep_port_val > 0:
