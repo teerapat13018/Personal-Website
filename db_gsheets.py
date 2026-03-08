@@ -46,6 +46,8 @@ WS_ALERTS   = "alerts"
 WS_WATCHLIST= "watchlist"
 WS_PORTFOLIO= "portfolio"
 WS_TRADES   = "planned_trades"
+WS_ETF      = "etf_holdings"
+WS_REBAL    = "rebalancing"
 
 # ── Headers ต่อ sheet (ต้องตรงกับ Column A ใน Spreadsheet) ──────────────────
 HEADERS = {
@@ -54,6 +56,8 @@ HEADERS = {
     WS_WATCHLIST: ["id","ticker","note","added_at"],
     WS_PORTFOLIO: ["id","ticker","qty","avg_cost"],
     WS_TRADES:    ["id","ticker","support_price","usd_amount","shares","created_at"],
+    WS_ETF:       ["etf_ticker","symbol","weight_pct"],
+    WS_REBAL:     ["ticker","target_pct"],
 }
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -310,6 +314,88 @@ def pt_clear():
     total_rows = len(ws.get_all_values())
     if total_rows > 1:
         ws.delete_rows(2, total_rows)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ETF HOLDINGS helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def etf_holdings_load() -> dict:
+    """
+    คืน dict { 'ETF_TICKER': [{'symbol': str, 'weight_pct': float}, ...] }
+    ใช้กับ Advanced Analytics (ETF Look-through / True Exposure)
+    """
+    df = _ws_to_df(WS_ETF)
+    if df.empty:
+        return {}
+    df["weight_pct"] = pd.to_numeric(df["weight_pct"], errors="coerce").fillna(0)
+    df = df[df["etf_ticker"].astype(str).str.strip() != ""]
+    df = df[df["symbol"].astype(str).str.strip() != ""]
+    df = df[df["weight_pct"] > 0]
+    result = {}
+    for etk, grp in df.groupby(df["etf_ticker"].str.upper().str.strip()):
+        result[etk] = grp[["symbol", "weight_pct"]].to_dict("records")
+    return result
+
+
+def etf_holdings_save(items: list):
+    """
+    บันทึก ETF Holdings ทั้งหมด (overwrite)
+    items: [{"etf_ticker": str, "symbol": str, "weight_pct": float}, ...]
+    """
+    ws = _get_ws(WS_ETF)
+    total_rows = len(ws.get_all_values())
+    if total_rows > 1:
+        ws.delete_rows(2, total_rows)
+    rows = []
+    for item in items:
+        etk = str(item.get("etf_ticker", "")).strip().upper()
+        sym = str(item.get("symbol", "")).strip().upper()
+        pct = float(item.get("weight_pct", 0))
+        if etk and sym and pct > 0:
+            rows.append([etk, sym, pct])
+    if rows:
+        ws.append_rows(rows, value_input_option="USER_ENTERED")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REBALANCING helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def rebalancing_load() -> dict:
+    """
+    คืน dict { 'TICKER': target_pct_float }
+    ใช้กับ Advanced Analytics (Sub-tab C: Rebalancing)
+    """
+    df = _ws_to_df(WS_REBAL)
+    if df.empty:
+        return {}
+    df["target_pct"] = pd.to_numeric(df["target_pct"], errors="coerce").fillna(0)
+    df = df[df["ticker"].astype(str).str.strip() != ""]
+    df = df[df["target_pct"] > 0]
+    return {
+        str(r["ticker"]).strip().upper(): float(r["target_pct"])
+        for _, r in df.iterrows()
+    }
+
+
+def rebalancing_save(items: list):
+    """
+    บันทึก Rebalancing targets ทั้งหมด (overwrite)
+    items: [{"ticker": str, "target_pct": float}, ...]
+    """
+    ws = _get_ws(WS_REBAL)
+    total_rows = len(ws.get_all_values())
+    if total_rows > 1:
+        ws.delete_rows(2, total_rows)
+    rows = []
+    for item in items:
+        tk  = str(item.get("ticker", "")).strip().upper()
+        pct = float(item.get("target_pct", 0))
+        if tk and pct > 0:
+            rows.append([tk, pct])
+    if rows:
+        ws.append_rows(rows, value_input_option="USER_ENTERED")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

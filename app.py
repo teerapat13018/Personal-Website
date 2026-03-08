@@ -575,6 +575,150 @@ def main():
                 else:
                     st.warning("⚠️ ยังไม่มีข้อมูลหุ้น")
 
+        # ═══════════════════════════════════════════════════════════════
+        # ETF Holdings — กรอก Holdings ของ ETF แต่ละตัว
+        # ═══════════════════════════════════════════════════════════════
+        st.divider()
+        st.markdown("### 🔍 ETF Holdings (Look-through)")
+        st.caption(
+            "กรอก Holdings ของ ETF แต่ละตัวในพอร์ต "
+            "เพื่อให้ระบบวิเคราะห์ True Exposure  \n"
+            "• **ETF Ticker** = ETF ที่คุณถืออยู่ เช่น `VTI`, `QQQ`  \n"
+            "• **Symbol** = หุ้นที่อยู่ภายใน ETF นั้น เช่น `AAPL`  \n"
+            "• **Weight %** = สัดส่วนใน ETF (%) เช่น `7.5`"
+        )
+
+        if "etf_holdings" not in st.session_state:
+            _eh_raw = etf_holdings_load()
+            _eh_rows = []
+            for _etk, _holdings in _eh_raw.items():
+                for _h in _holdings:
+                    _eh_rows.append({
+                        "ETF Ticker": _etk,
+                        "Symbol":     _h["symbol"],
+                        "Weight %":   _h["weight_pct"],
+                    })
+            st.session_state.etf_holdings = _eh_rows
+
+        _eh_data = st.session_state.etf_holdings
+        if not _eh_data:
+            _eh_data = [{"ETF Ticker": "", "Symbol": "", "Weight %": 0.0}]
+
+        _df_eh_edit = pd.DataFrame(_eh_data)[["ETF Ticker", "Symbol", "Weight %"]]
+        _edited_eh = st.data_editor(
+            _df_eh_edit,
+            column_config={
+                "ETF Ticker": st.column_config.TextColumn(
+                    "ETF Ticker", width="medium",
+                    help="เช่น VTI, QQQ, SPY"
+                ),
+                "Symbol": st.column_config.TextColumn(
+                    "Symbol", width="medium",
+                    help="หุ้นที่อยู่ใน ETF เช่น AAPL, MSFT"
+                ),
+                "Weight %": st.column_config.NumberColumn(
+                    "Weight %", min_value=0.0, max_value=100.0,
+                    format="%.2f", width="small",
+                    help="สัดส่วนใน ETF (%) เช่น 7.5"
+                ),
+            },
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            key="etf_holdings_editor",
+        )
+        st.caption("💡 ETF 1 ตัวมีได้หลาย Symbol — กรอกแต่ละ row ด้วย ETF Ticker เดิม")
+
+        _btn_eh_col, _ = st.columns([1.8, 5])
+        with _btn_eh_col:
+            if st.button("💾 Save ETF Holdings", use_container_width=True):
+                _eh_items = []
+                for _, _r in _edited_eh.iterrows():
+                    _etk2 = str(_r["ETF Ticker"]).strip().upper()
+                    _sym2 = str(_r["Symbol"]).strip().upper()
+                    _pct2 = float(_r["Weight %"]) if pd.notna(_r["Weight %"]) else 0.0
+                    if _etk2 and _sym2 and _pct2 > 0:
+                        _eh_items.append({
+                            "etf_ticker": _etk2,
+                            "symbol":     _sym2,
+                            "weight_pct": _pct2,
+                        })
+                etf_holdings_save(_eh_items)
+                st.session_state.etf_holdings = [
+                    {"ETF Ticker": i["etf_ticker"],
+                     "Symbol":     i["symbol"],
+                     "Weight %":   i["weight_pct"]}
+                    for i in _eh_items
+                ]
+                st.success(f"✅ บันทึก ETF Holdings {len(_eh_items)} rows แล้ว!")
+
+        # ═══════════════════════════════════════════════════════════════
+        # Rebalancing Targets — กรอก Target % ของพอร์ต
+        # ═══════════════════════════════════════════════════════════════
+        st.divider()
+        st.markdown("### ⚖️ Rebalancing Targets")
+        st.caption(
+            "กรอก Target % ของแต่ละ Ticker เพื่อให้ระบบคำนวณว่าต้องซื้อ/ขายเท่าไหร่  \n"
+            "• รวมทุก Target % ควรเท่ากับ **100%**"
+        )
+
+        if "rebalancing" not in st.session_state:
+            _rb_raw = rebalancing_load()
+            st.session_state.rebalancing = [
+                {"Ticker": _tk, "Target %": _pct}
+                for _tk, _pct in _rb_raw.items()
+            ]
+
+        _rb_data = st.session_state.rebalancing
+        if not _rb_data:
+            _rb_data = [{"Ticker": "", "Target %": 0.0}]
+
+        _df_rb_edit = pd.DataFrame(_rb_data)[["Ticker", "Target %"]]
+        _edited_rb = st.data_editor(
+            _df_rb_edit,
+            column_config={
+                "Ticker": st.column_config.TextColumn(
+                    "Ticker", width="medium",
+                    help="เช่น TSLA, AAPL, VTI"
+                ),
+                "Target %": st.column_config.NumberColumn(
+                    "Target %", min_value=0.0, max_value=100.0,
+                    format="%.1f", width="small",
+                    help="สัดส่วนเป้าหมาย (%) เช่น 20.0"
+                ),
+            },
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            key="rebalancing_editor",
+        )
+
+        _rb_total = pd.to_numeric(
+            _df_rb_edit["Target %"], errors="coerce").fillna(0).sum()
+        _has_rb_data = (_df_rb_edit["Ticker"].astype(str).str.strip() != "").any()
+        if _has_rb_data:
+            _tc = "green" if abs(_rb_total - 100) < 0.5 else "orange"
+            st.caption(
+                f"รวม Target %: :{_tc}[**{_rb_total:.1f}%**]"
+                + (" ✅" if abs(_rb_total - 100) < 0.5 else " ⚠️ ควรรวมเป็น 100%")
+            )
+
+        _btn_rb_col, _ = st.columns([1.8, 5])
+        with _btn_rb_col:
+            if st.button("💾 Save Rebalancing", use_container_width=True):
+                _rb_items = []
+                for _, _r in _edited_rb.iterrows():
+                    _tk2  = str(_r["Ticker"]).strip().upper()
+                    _pct3 = float(_r["Target %"]) if pd.notna(_r["Target %"]) else 0.0
+                    if _tk2 and _pct3 > 0:
+                        _rb_items.append({"ticker": _tk2, "target_pct": _pct3})
+                rebalancing_save(_rb_items)
+                st.session_state.rebalancing = [
+                    {"Ticker": i["ticker"], "Target %": i["target_pct"]}
+                    for i in _rb_items
+                ]
+                st.success(f"✅ บันทึก Rebalancing {len(_rb_items)} rows แล้ว!")
+
     # ════════════════════════════════════
     # TAB 1 — Chart & Analysis
     # ════════════════════════════════════
@@ -1779,59 +1923,17 @@ def main():
                         _adv_thb_usd = 1.0 / 33.5
                     _adv_fx_rates = {"BK": _adv_thb_usd}
 
-                    # ── อ่าน ETF_Holdings + Rebalancing จาก portfolio.xlsx ──
-                    _manual_holdings  = {}
-                    _target_pcts_xl   = {}
-                    _xlsx_path_adv    = Path(__file__).parent / "portfolio.xlsx"
-                    if _xlsx_path_adv.exists():
-                        # — ETF_Holdings sheet ───────────────────────────────
-                        try:
-                            _df_eh = pd.read_excel(
-                                _xlsx_path_adv,
-                                sheet_name="ETF_Holdings",
-                                header=2,
-                                usecols=[0, 1, 2],
-                                dtype={"etf_ticker": str, "symbol": str},
-                            )
-                            _df_eh.columns = ["etf_ticker", "symbol", "weight_pct"]
-                            _df_eh["weight_pct"] = pd.to_numeric(
-                                _df_eh["weight_pct"], errors="coerce").fillna(0)
-                            _df_eh = _df_eh.dropna(subset=["etf_ticker", "symbol"])
-                            _df_eh = _df_eh[
-                                _df_eh["etf_ticker"].astype(str).str.strip() != ""]
-                            _df_eh = _df_eh[
-                                _df_eh["symbol"].astype(str).str.strip() != ""]
-                            _df_eh = _df_eh[_df_eh["weight_pct"] > 0]
-                            for _etk, _grp in _df_eh.groupby(
-                                    _df_eh["etf_ticker"].str.upper().str.strip()):
-                                _manual_holdings[_etk] = _grp[[
-                                    "symbol", "weight_pct"]].to_dict("records")
-                        except Exception:
-                            pass
-                        # — Rebalancing sheet ───────────────────────────────
-                        try:
-                            _df_rb = pd.read_excel(
-                                _xlsx_path_adv,
-                                sheet_name="Rebalancing",
-                                header=2,           # row 3 = headers (0-indexed=2)
-                                usecols=[0, 1],
-                                dtype={"ticker": str},
-                            )
-                            _df_rb.columns = ["ticker", "target_pct"]
-                            _df_rb["target_pct"] = pd.to_numeric(
-                                _df_rb["target_pct"], errors="coerce").fillna(0)
-                            _df_rb = _df_rb.dropna(subset=["ticker"])
-                            _df_rb = _df_rb[
-                                _df_rb["ticker"].astype(str).str.strip()
-                                .str.upper() != "TOTAL"]
-                            _df_rb = _df_rb[
-                                _df_rb["ticker"].astype(str).str.strip() != ""]
-                            _df_rb = _df_rb[_df_rb["target_pct"] > 0]
-                            for _, _row in _df_rb.iterrows():
-                                _tk_rb = str(_row["ticker"]).strip().upper()
-                                _target_pcts_xl[_tk_rb] = float(_row["target_pct"])
-                        except Exception:
-                            pass
+                    # ── อ่าน ETF_Holdings + Rebalancing จาก Google Sheets ──
+                    _manual_holdings = {}
+                    _target_pcts_xl  = {}
+                    try:
+                        _manual_holdings = etf_holdings_load()
+                    except Exception:
+                        pass
+                    try:
+                        _target_pcts_xl = rebalancing_load()
+                    except Exception:
+                        pass
                     # ─────────────────────────────────────────────────────
 
                     st.session_state["adv_data"] = {
@@ -2107,13 +2209,14 @@ def main():
 
                 # ────────────────────────────────────────────────────────
                 # ────────────────────────────────────────────────────────
-                # SUB-TAB C — Rebalancing  (Excel-driven)
+                # SUB-TAB C — Rebalancing  (Google Sheets-driven)
                 # ────────────────────────────────────────────────────────
                 with adv_t3:
                     st.markdown("### ⚖️ Rebalancing Summary")
                     st.caption(
-                        "กรอก **Target %** ใน `portfolio.xlsx` → Sheet **Rebalancing** "
-                        "→ บันทึกไฟล์ → กด **Run Analysis** เพื่อโหลดผล")
+                        "กรอก **Target %** ในแท็บ ✏️ กรอกพอร์ต → ส่วน Rebalancing Targets "
+                        "→ กด **Save Rebalancing** → กด **Run Analysis** เพื่อโหลดผล"
+                    )
 
                     cur_prices      = D["cur_prices"]
                     vp              = D["valid_port"]
@@ -2136,13 +2239,13 @@ def main():
                     if total_val <= 0:
                         st.error("❌ ไม่มีข้อมูลราคา — กลับไปกด **Run Analysis**")
                     elif not _target_pcts_xl:
-                        # ── ยังไม่มีข้อมูลจาก Excel ──────────────────────
+                        # ── ยังไม่มีข้อมูล Rebalancing ───────────────────
                         st.warning(
-                            "📋 **ยังไม่มีข้อมูล Target จาก Excel**\n\n"
+                            "📋 **ยังไม่มีข้อมูล Target %**\n\n"
                             "**วิธีกรอก:**\n"
-                            "1. เปิดไฟล์ `portfolio.xlsx` → Sheet **Rebalancing**\n"
-                            "2. กรอก `ticker` และ `target_pct (%)` ให้รวม = **100%**\n"
-                            "3. บันทึกไฟล์ → กลับมากด **Run Analysis** อีกครั้ง"
+                            "1. ไปที่แท็บ ✏️ **กรอกพอร์ต** → ส่วน **⚖️ Rebalancing Targets**\n"
+                            "2. กรอก Ticker และ Target % ให้รวม = **100%**\n"
+                            "3. กด **💾 Save Rebalancing** → กลับมากด **Run Analysis** อีกครั้ง"
                         )
                         # แสดงตาราง current allocation เป็น reference
                         st.markdown("##### 📊 Current Allocation (อ้างอิง)")
