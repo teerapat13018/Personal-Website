@@ -538,44 +538,6 @@ def main():
         )
 
         st.caption("💡 คลิกแถวล่างสุดเพื่อเพิ่มหุ้นใหม่ — คลิกแถวแล้วกด Delete เพื่อลบ")
-        st.divider()
-
-        btn_col1, btn_col2, _ = st.columns([1.2, 1.5, 4])
-        with btn_col1:
-            if st.button("💾 Save Portfolio", use_container_width=True):
-                _items = []
-                for _, _r in edited_df.iterrows():
-                    _tk = str(_r["Ticker"]).strip().upper()
-                    if _tk and float(_r["จำนวนหุ้น"]) > 0:
-                        _items.append({
-                            "ticker":   _tk,
-                            "qty":      float(_r["จำนวนหุ้น"]),
-                            "avg_cost": float(_r["ทุนเฉลี่ย ($)"]),
-                        })
-                if _items:
-                    st.session_state.portfolio = _items
-                    portfolio_save(_items)
-                    st.success(f"✅ บันทึก {len(_items)} หุ้นลง Google Sheets แล้ว!")
-                else:
-                    st.warning("⚠️ ยังไม่มีข้อมูลหุ้น กรุณากรอก Ticker และจำนวนหุ้น")
-        with btn_col2:
-            if st.button("📊 Save & Update P&L", use_container_width=True, type="primary"):
-                _items = []
-                for _, _r in edited_df.iterrows():
-                    _tk = str(_r["Ticker"]).strip().upper()
-                    if _tk and float(_r["จำนวนหุ้น"]) > 0:
-                        _items.append({
-                            "ticker":   _tk,
-                            "qty":      float(_r["จำนวนหุ้น"]),
-                            "avg_cost": float(_r["ทุนเฉลี่ย ($)"]),
-                        })
-                if _items:
-                    st.session_state.portfolio = _items
-                    portfolio_save(_items)
-                    update_portfolio_btn = True
-                    st.info("✅ บันทึกแล้ว — ไปดูผลที่แท็บ **💼 Portfolio P&L**")
-                else:
-                    st.warning("⚠️ ยังไม่มีข้อมูลหุ้น")
 
         # ═══════════════════════════════════════════════════════════════
         # ETF Holdings — กรอก Holdings ของ ETF แต่ละตัว
@@ -631,29 +593,6 @@ def main():
         )
         st.caption("💡 ETF 1 ตัวมีได้หลาย Symbol — กรอกแต่ละ row ด้วย ETF Ticker เดิม")
 
-        _btn_eh_col, _ = st.columns([1.8, 5])
-        with _btn_eh_col:
-            if st.button("💾 Save ETF Holdings", use_container_width=True):
-                _eh_items = []
-                for _, _r in _edited_eh.iterrows():
-                    _etk2 = str(_r["ETF Ticker"]).strip().upper()
-                    _sym2 = str(_r["Symbol"]).strip().upper()
-                    _pct2 = float(_r["Weight %"]) if pd.notna(_r["Weight %"]) else 0.0
-                    if _etk2 and _sym2 and _pct2 > 0:
-                        _eh_items.append({
-                            "etf_ticker": _etk2,
-                            "symbol":     _sym2,
-                            "weight_pct": _pct2,
-                        })
-                etf_holdings_save(_eh_items)
-                st.session_state.etf_holdings = [
-                    {"ETF Ticker": i["etf_ticker"],
-                     "Symbol":     i["symbol"],
-                     "Weight %":   i["weight_pct"]}
-                    for i in _eh_items
-                ]
-                st.success(f"✅ บันทึก ETF Holdings {len(_eh_items)} rows แล้ว!")
-
         # ═══════════════════════════════════════════════════════════════
         # Rebalancing Targets — กรอก Target % ของพอร์ต
         # ═══════════════════════════════════════════════════════════════
@@ -705,21 +644,83 @@ def main():
                 + (" ✅" if abs(_rb_total - 100) < 0.5 else " ⚠️ ควรรวมเป็น 100%")
             )
 
-        _btn_rb_col, _ = st.columns([1.8, 5])
-        with _btn_rb_col:
-            if st.button("💾 Save Rebalancing", use_container_width=True):
-                _rb_items = []
-                for _, _r in _edited_rb.iterrows():
-                    _tk2  = str(_r["Ticker"]).strip().upper()
-                    _pct3 = float(_r["Target %"]) if pd.notna(_r["Target %"]) else 0.0
-                    if _tk2 and _pct3 > 0:
-                        _rb_items.append({"ticker": _tk2, "target_pct": _pct3})
-                rebalancing_save(_rb_items)
-                st.session_state.rebalancing = [
-                    {"Ticker": i["ticker"], "Target %": i["target_pct"]}
-                    for i in _rb_items
-                ]
-                st.success(f"✅ บันทึก Rebalancing {len(_rb_items)} rows แล้ว!")
+        # ═══════════════════════════════════════════════════════════════
+        # UNIFIED SAVE — บันทึกพอร์ต + ETF Holdings + Rebalancing ทีเดียว
+        # ═══════════════════════════════════════════════════════════════
+        st.divider()
+        st.markdown("### 💾 บันทึกข้อมูลทั้งหมด")
+        st.caption("กดปุ่มนี้เพื่อบันทึก **พอร์ตหุ้น**, **ETF Holdings** และ **Rebalancing Targets** ทีเดียวพร้อมกัน")
+
+        _save_col, _ = st.columns([2, 5])
+        with _save_col:
+            if st.button("💾 บันทึกทั้งหมด", use_container_width=True, type="primary"):
+                _save_errors = []
+
+                # 1) Save Portfolio
+                try:
+                    _port_items = []
+                    for _, _r in edited_df.iterrows():
+                        _tk = str(_r["Ticker"]).strip().upper()
+                        _q  = float(_r["จำนวนหุ้น"]) if pd.notna(_r["จำนวนหุ้น"]) else 0.0
+                        _c  = float(_r["ทุนเฉลี่ย ($)"]) if pd.notna(_r["ทุนเฉลี่ย ($)"]) else 0.0
+                        if _tk and _q > 0 and _c > 0:
+                            _port_items.append({"ticker": _tk, "qty": _q, "avg_cost": _c})
+                    portfolio_save(_port_items)
+                    st.session_state.portfolio = _port_items
+                except Exception as _e:
+                    _save_errors.append(f"Portfolio: {_e}")
+
+                # 2) Save ETF Holdings
+                try:
+                    _eh_items = []
+                    for _, _r in _edited_eh.iterrows():
+                        _etk2 = str(_r["ETF Ticker"]).strip().upper()
+                        _sym2 = str(_r["Symbol"]).strip().upper()
+                        _pct2 = float(_r["Weight %"]) if pd.notna(_r["Weight %"]) else 0.0
+                        if _etk2 and _sym2 and _pct2 > 0:
+                            _eh_items.append({
+                                "etf_ticker": _etk2,
+                                "symbol":     _sym2,
+                                "weight_pct": _pct2,
+                            })
+                    etf_holdings_save(_eh_items)
+                    st.session_state.etf_holdings = [
+                        {"ETF Ticker": i["etf_ticker"],
+                         "Symbol":     i["symbol"],
+                         "Weight %":   i["weight_pct"]}
+                        for i in _eh_items
+                    ]
+                except Exception as _e:
+                    _save_errors.append(f"ETF Holdings: {_e}")
+
+                # 3) Save Rebalancing
+                try:
+                    _rb_items = []
+                    for _, _r in _edited_rb.iterrows():
+                        _tk2  = str(_r["Ticker"]).strip().upper()
+                        _pct3 = float(_r["Target %"]) if pd.notna(_r["Target %"]) else 0.0
+                        if _tk2 and _pct3 > 0:
+                            _rb_items.append({"ticker": _tk2, "target_pct": _pct3})
+                    rebalancing_save(_rb_items)
+                    st.session_state.rebalancing = [
+                        {"Ticker": i["ticker"], "Target %": i["target_pct"]}
+                        for i in _rb_items
+                    ]
+                except Exception as _e:
+                    _save_errors.append(f"Rebalancing: {_e}")
+
+                if _save_errors:
+                    st.error("⚠️ บันทึกบางส่วนล้มเหลว:\n" + "\n".join(_save_errors))
+                else:
+                    _p_count  = len(_port_items)  if "_port_items"  in dir() else 0
+                    _eh_count = len(_eh_items)    if "_eh_items"    in dir() else 0
+                    _rb_count = len(_rb_items)    if "_rb_items"    in dir() else 0
+                    st.success(
+                        f"✅ บันทึกสำเร็จ! — "
+                        f"Portfolio {_p_count} รายการ · "
+                        f"ETF Holdings {_eh_count} rows · "
+                        f"Rebalancing {_rb_count} rows"
+                    )
 
     # ════════════════════════════════════
     # TAB 1 — Chart & Analysis
@@ -930,6 +931,30 @@ def main():
 
         with _sep_c1:
             st.markdown("#### 🎯 ตั้งค่า")
+
+            # ── Quick-select from portfolio ────────────────────────────
+            _port_tickers_sep = []
+            if "portfolio" in st.session_state:
+                _port_tickers_sep = [
+                    str(_r2.get("ticker", "")).strip().upper()
+                    for _r2 in st.session_state.portfolio
+                    if str(_r2.get("ticker", "")).strip()
+                ]
+
+            if _port_tickers_sep:
+                _quick_options = ["— เลือกจากพอร์ต —"] + _port_tickers_sep
+                _quick_sel = st.selectbox(
+                    "📋 จากพอร์ตของฉัน",
+                    _quick_options,
+                    key="sep_port_select",
+                    help="เลือก Ticker ที่ถืออยู่เพื่อเติมลงช่อง Ticker อัตโนมัติ",
+                )
+                if (
+                    _quick_sel != "— เลือกจากพอร์ต —"
+                    and st.session_state.get("sep_ticker_input", "") != _quick_sel
+                ):
+                    st.session_state["sep_ticker_input"] = _quick_sel
+                    st.rerun()
 
             _sep_ticker = st.text_input(
                 "Ticker",
