@@ -464,92 +464,16 @@ def main():
     init_db()  # เชื่อมต่อ Google Sheets และตรวจสอบ tabs
 
     # ════════════════════════════════════
-    # SIDEBAR — Portfolio
+    # SIDEBAR — minimal
     # ════════════════════════════════════
     with st.sidebar:
-        st.markdown("## 💼 My Portfolio")
-        st.caption("กรอกหุ้นที่ถือ → กด **Update Portfolio**")
-
-        # ── Excel Import ──────────────────────────────────────
-        _xlsx_path = Path(__file__).parent / "portfolio.xlsx"
-        with st.expander("📥 Import from Excel", expanded=False):
-            if _xlsx_path.exists():
-                st.caption(f"✅ พบไฟล์ portfolio.xlsx")
-                if st.button("📥 นำเข้าข้อมูลจาก Excel", use_container_width=True):
-                    try:
-                        _df_xl = pd.read_excel(
-                            _xlsx_path, sheet_name="Portfolio",
-                            header=3, usecols=[0, 1, 2],
-                            dtype={"ticker": str}
-                        )
-                        _df_xl.columns = ["ticker", "qty", "avg_cost"]
-                        # แปลง qty / avg_cost เป็นตัวเลข แล้วกรองแถวที่ qty > 0 เท่านั้น
-                        _df_xl["qty"]      = pd.to_numeric(_df_xl["qty"],      errors="coerce").fillna(0)
-                        _df_xl["avg_cost"] = pd.to_numeric(_df_xl["avg_cost"], errors="coerce").fillna(0)
-                        _df_xl = _df_xl.dropna(subset=["ticker"])
-                        _df_xl = _df_xl[_df_xl["ticker"].astype(str).str.strip() != ""]
-                        _df_xl = _df_xl[_df_xl["ticker"].astype(str).str.upper() != "NAN"]
-                        _df_xl = _df_xl[_df_xl["qty"] > 0]   # ตัดแถวว่าง / qty=0 ออก
-                        _items = []
-                        for _, _row in _df_xl.iterrows():
-                            _tk = str(_row["ticker"]).strip().upper()
-                            if not _tk:
-                                continue
-                            _items.append({"ticker": _tk, "qty": float(_row["qty"]), "avg_cost": float(_row["avg_cost"])})
-                        if _items:
-                            st.session_state.portfolio = _items
-                            portfolio_save(_items)
-                            st.success(f"✅ Import สำเร็จ {len(_items)} หุ้น!")
-                            st.rerun()
-                        else:
-                            st.warning("⚠️ ไม่พบข้อมูลหุ้นในไฟล์")
-                    except Exception as _e:
-                        st.error(f"❌ อ่านไฟล์ไม่สำเร็จ: {_e}")
-            else:
-                st.info("ℹ️ ยังไม่พบ portfolio.xlsx")
-                st.caption(f"วางไฟล์ไว้ในโฟลเดอร์เดียวกับ app.py")
-        # ─────────────────────────────────────────────────────
-
-        if "portfolio" not in st.session_state:
-            saved = portfolio_load()
-            st.session_state.portfolio = saved if saved else [
-                {"ticker": "", "qty": 0, "avg_cost": 0.0}
-            ]
-
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("➕ Add", use_container_width=True):
-                st.session_state.portfolio.append(
-                    {"ticker": "", "qty": 0, "avg_cost": 0.0})
-        with c2:
-            if st.button("➖ Remove", use_container_width=True):
-                if len(st.session_state.portfolio) > 1:
-                    st.session_state.portfolio.pop()
-
+        st.markdown("## 📈 Investment Dashboard")
+        st.caption(f"Last session: {datetime.now().strftime('%d %b %Y %H:%M')}")
         st.divider()
-        for i, item in enumerate(st.session_state.portfolio):
-            _alerted_ = item.get("ticker", "").upper() in st.session_state.get("alerted_tickers", set())
-            _alert_badge_ = "  🔔" if _alerted_ else ""
-            with st.expander(f"Stock #{i+1}  {item['ticker']}{_alert_badge_}", expanded=(i < 3)):
-                item["ticker"] = st.text_input(
-                    "Ticker", value=item["ticker"],
-                    key=f"t_{i}", placeholder="e.g. TSLA").upper().strip()
-                item["qty"] = st.number_input(
-                    "จำนวนหุ้น", value=float(item["qty"]),
-                    min_value=0.0, step=0.01, format="%.2f", key=f"q_{i}")
-                item["avg_cost"] = st.number_input(
-                    "ทุนเฉลี่ย ($)", value=item["avg_cost"],
-                    min_value=0.0, step=0.01, format="%.2f", key=f"c_{i}")
+        st.caption("👈 ไปที่แท็บ **✏️ กรอกพอร์ต** เพื่อเพิ่ม/แก้ไขหุ้น")
 
-        st.divider()
-        save_col, update_col = st.columns(2)
-        with save_col:
-            if st.button("💾 Save Portfolio", use_container_width=True):
-                portfolio_save(st.session_state.portfolio)
-                st.success("✅ บันทึกแล้ว!")
-        with update_col:
-            update_portfolio_btn = st.button(
-                "📊 Update", use_container_width=True, type="primary")
+    # ── initialize before tabs ──
+    update_portfolio_btn = False
 
     # ════════════════════════════════════
     # HEADER
@@ -557,13 +481,94 @@ def main():
     st.title("📈 Investment Dashboard")
     st.caption(f"Last session: {datetime.now().strftime('%d %b %Y %H:%M')}")
 
-    tab_chart, tab_port, tab_diary, tab_watch, tab_adv = st.tabs([
+    tab_input, tab_chart, tab_port, tab_diary, tab_watch, tab_adv = st.tabs([
+        "✏️  กรอกพอร์ต",
         "📊  Chart & Analysis",
-        "💼  Portfolio",
+        "💼  Portfolio P&L",
         "📔  Investment Diary",
         "🌙  Watchlist",
         "🚀  Advanced Analytics",
     ])
+
+    # ════════════════════════════════════
+    # TAB 0 — Portfolio Input (Excel-style)
+    # ════════════════════════════════════
+    with tab_input:
+        st.markdown("## ✏️ กรอกพอร์ตของฉัน")
+        st.caption("พิมพ์ Ticker → กรอกจำนวนหุ้นและทุนเฉลี่ย → กด **💾 Save** เพื่อบันทึก")
+
+        # โหลดข้อมูลจาก Google Sheets ครั้งแรก
+        if "portfolio" not in st.session_state:
+            saved = portfolio_load()
+            st.session_state.portfolio = saved if saved else []
+
+        port_data = st.session_state.portfolio
+        if not port_data:
+            port_data = [{"ticker": "", "qty": 0.0, "avg_cost": 0.0}]
+
+        df_port = pd.DataFrame(port_data)[["ticker", "qty", "avg_cost"]]
+        df_port.columns = ["Ticker", "จำนวนหุ้น", "ทุนเฉลี่ย ($)"]
+
+        edited_df = st.data_editor(
+            df_port,
+            column_config={
+                "Ticker": st.column_config.TextColumn(
+                    "Ticker", width="medium",
+                    help="เช่น TSLA, AAPL, PTT.BK (หุ้นไทยใส่ .BK)"
+                ),
+                "จำนวนหุ้น": st.column_config.NumberColumn(
+                    "จำนวนหุ้น", min_value=0.0, format="%.2f", width="medium"
+                ),
+                "ทุนเฉลี่ย ($)": st.column_config.NumberColumn(
+                    "ทุนเฉลี่ย ($)", min_value=0.0, format="%.4f", width="medium",
+                    help="หุ้นไทยใส่เป็นบาท เช่น 32.50"
+                ),
+            },
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            key="portfolio_editor",
+        )
+
+        st.caption("💡 คลิกแถวล่างสุดเพื่อเพิ่มหุ้นใหม่ — คลิกแถวแล้วกด Delete เพื่อลบ")
+        st.divider()
+
+        btn_col1, btn_col2, _ = st.columns([1.2, 1.5, 4])
+        with btn_col1:
+            if st.button("💾 Save Portfolio", use_container_width=True):
+                _items = []
+                for _, _r in edited_df.iterrows():
+                    _tk = str(_r["Ticker"]).strip().upper()
+                    if _tk and float(_r["จำนวนหุ้น"]) > 0:
+                        _items.append({
+                            "ticker":   _tk,
+                            "qty":      float(_r["จำนวนหุ้น"]),
+                            "avg_cost": float(_r["ทุนเฉลี่ย ($)"]),
+                        })
+                if _items:
+                    st.session_state.portfolio = _items
+                    portfolio_save(_items)
+                    st.success(f"✅ บันทึก {len(_items)} หุ้นลง Google Sheets แล้ว!")
+                else:
+                    st.warning("⚠️ ยังไม่มีข้อมูลหุ้น กรุณากรอก Ticker และจำนวนหุ้น")
+        with btn_col2:
+            if st.button("📊 Save & Update P&L", use_container_width=True, type="primary"):
+                _items = []
+                for _, _r in edited_df.iterrows():
+                    _tk = str(_r["Ticker"]).strip().upper()
+                    if _tk and float(_r["จำนวนหุ้น"]) > 0:
+                        _items.append({
+                            "ticker":   _tk,
+                            "qty":      float(_r["จำนวนหุ้น"]),
+                            "avg_cost": float(_r["ทุนเฉลี่ย ($)"]),
+                        })
+                if _items:
+                    st.session_state.portfolio = _items
+                    portfolio_save(_items)
+                    update_portfolio_btn = True
+                    st.info("✅ บันทึกแล้ว — ไปดูผลที่แท็บ **💼 Portfolio P&L**")
+                else:
+                    st.warning("⚠️ ยังไม่มีข้อมูลหุ้น")
 
     # ════════════════════════════════════
     # TAB 1 — Chart & Analysis
@@ -733,7 +738,7 @@ def main():
             valid = [i for i in st.session_state.portfolio
                      if i["ticker"] and i["qty"] > 0]
             if not valid:
-                st.warning("⚠️ กรุณากรอกข้อมูลหุ้นใน Sidebar ก่อน")
+                st.warning("⚠️ กรุณากรอกข้อมูลหุ้นในแท็บ **✏️ กรอกพอร์ต** ก่อน")
             else:
                 with st.spinner("⏳ กำลังดึงราคา…"):
                     rows, labels, values = [], [], []
@@ -865,20 +870,7 @@ def main():
                             color_pnl, subset=["P&L ($)", "P&L (%)"])
                         st.dataframe(styled, hide_index=True, use_container_width=True)
 
-                    # ════════════════════════════════════════════════════════
-                    # 🎰  What-if Simulator
-                    # ════════════════════════════════════════════════════════
-                    st.divider()
-                    st.markdown("### 🎰 What-if Simulator")
-                    st.caption(
-                        "ปรับ % ราคาแต่ละตัวแบบ real-time เพื่อดูผลต่อพอร์ต — "
-                        "รวม ETF Look-through (ถ้ากรอก ETF_Holdings ใน Excel แล้ว)"
-                    )
-
-                    _raw = st.session_state.get("portfolio_raw", {})
-                    if not _raw:
-                        st.info("💡 กด **Update Portfolio** เพื่อโหลดข้อมูลก่อน")
-                    else:
+                    if False:
                         _adv = st.session_state.get("adv_data", {})
                         _man = _adv.get("manual_holdings", {})
 
@@ -1035,7 +1027,7 @@ def main():
                             st.dataframe(_wi_styled, hide_index=True,
                                          use_container_width=True)
         else:
-            st.info("💡 กรอกพอร์ตใน Sidebar แล้วกด **Update Portfolio**")
+            st.info("💡 กรอกพอร์ตในแท็บ **✏️ กรอกพอร์ต** แล้วกด **Save & Update P&L**")
 
     # ════════════════════════════════════
     # TAB 3 — Investment Diary
@@ -1724,7 +1716,7 @@ def main():
                       if i.get("ticker") and i.get("qty", 0) > 0]
 
         if not valid_port:
-            st.warning("⚠️ กรุณากรอกข้อมูลพอร์ตใน **Sidebar** ก่อน แล้วกด Run Analysis")
+            st.warning("⚠️ กรุณากรอกข้อมูลพอร์ตในแท็บ **✏️ กรอกพอร์ต** ก่อน แล้วกด Save & Update P&L")
         else:
             # ── Control Row ──────────────────────────────────────────────
             ctrl1, ctrl2, ctrl3 = st.columns([1.5, 1.8, 1])
@@ -1985,40 +1977,6 @@ def main():
                             for k, v in sorted(
                                 exposure.items(), key=lambda x: -x[1])
                         ])
-
-                        # ── Treemap ───────────────────────────────────
-                        st.markdown("#### 🗺️ True Exposure Treemap")
-                        st.caption(
-                            "รวม ETF Look-through แล้ว — "
-                            "สี = สัดส่วน (เขียว = น้อย / แดง = เยอะ)")
-
-                        fig_tree = px.treemap(
-                            exp_df,
-                            path=["Sector", "Symbol"],
-                            values="Value",
-                            color="Alloc %",
-                            color_continuous_scale="RdYlGn_r",
-                            hover_data={"Value": True, "Alloc %": ":.2f"},
-                            title="True Portfolio Exposure (including ETF Look-through)",
-                        )
-                        fig_tree.update_traces(
-                            texttemplate=(
-                                "<b>%{label}</b><br>"
-                                "$%{value:,.0f}<br>"
-                                "%{color:.1f}%"
-                            ),
-                            hovertemplate=(
-                                "<b>%{label}</b><br>"
-                                "Value: $%{value:,.2f}<br>"
-                                "Alloc: %{color:.2f}%<extra></extra>"
-                            ),
-                        )
-                        fig_tree.update_layout(
-                            template="plotly_dark", height=440,
-                            paper_bgcolor="#0e1117",
-                            margin=dict(l=10, r=10, t=50, b=10),
-                        )
-                        st.plotly_chart(fig_tree, use_container_width=True)
 
                         # Exposure table
                         disp = exp_df.copy()
