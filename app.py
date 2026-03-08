@@ -43,7 +43,7 @@ st.set_page_config(
     page_title="📈 Investment Dashboard",
     layout="wide",
     page_icon="📈",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 st.markdown("""
@@ -51,6 +51,9 @@ st.markdown("""
     .positive { color: #26a69a; font-weight: bold; }
     .negative { color: #ef5350; font-weight: bold; }
     div[data-testid="stTabs"] button { font-size: 15px; }
+    /* Hide sidebar toggle button */
+    button[data-testid="collapsedControl"] { display: none !important; }
+    section[data-testid="stSidebar"] { display: none !important; }
     .news-card {
         background: #1a1a2e;
         border-radius: 8px;
@@ -481,14 +484,16 @@ def main():
     st.title("📈 Investment Dashboard")
     st.caption(f"Last session: {datetime.now().strftime('%d %b %Y %H:%M')}")
 
-    tab_input, tab_chart, tab_port, tab_diary, tab_watch, tab_adv = st.tabs([
+    tab_input, tab_chart, tab_adv = st.tabs([
         "✏️  กรอกพอร์ต",
         "📊  Chart & Analysis",
-        "💼  Portfolio P&L",
-        "📔  Investment Diary",
-        "🌙  Watchlist",
         "🚀  Advanced Analytics",
     ])
+    # Hidden tabs — preserved for future use
+    tab_port  = None  # hidden below with if False:
+    tab_diary = None  # hidden below with if False:
+    tab_watch = None  # hidden below with if False:
+
 
     # ════════════════════════════════════
     # TAB 0 — Portfolio Input (Excel-style)
@@ -730,515 +735,7 @@ def main():
         else:
             st.info("👆 กรอก Ticker แล้วกด **Update Data** เพื่อโหลดกราฟ")
 
-    # ════════════════════════════════════
-    # TAB 2 — Portfolio
-    # ════════════════════════════════════
-    with tab_port:
-        if update_portfolio_btn or "portfolio_data" in st.session_state:
-            valid = [i for i in st.session_state.portfolio
-                     if i["ticker"] and i["qty"] > 0]
-            if not valid:
-                st.warning("⚠️ กรุณากรอกข้อมูลหุ้นในแท็บ **✏️ กรอกพอร์ต** ก่อน")
-            else:
-                with st.spinner("⏳ กำลังดึงราคา…"):
-                    rows, labels, values = [], [], []
-                    portfolio_raw_update  = {}          # raw floats สำหรับ What-if Simulator
-
-                    # ── ดึงอัตราแลกเปลี่ยน THB/USD ครั้งเดียว ──────────────
-                    _thb_usd = 0.0
-                    try:
-                        _fx_hist = yf.Ticker("THBUSD=X").history(period="5d")
-                        if not _fx_hist.empty:
-                            _thb_usd = float(_fx_hist["Close"].iloc[-1])
-                    except Exception:
-                        pass
-                    if _thb_usd <= 0:
-                        _thb_usd = 1.0 / 33.5   # fallback ~33.5 THB per USD
-                    # ─────────────────────────────────────────────────────────
-
-                    for item in valid:
-                        try:
-                            hist = yf.Ticker(item["ticker"]).history(period="2d")
-                            if hist.empty:
-                                continue
-                            price = hist["Close"].iloc[-1]
-
-                            # แปลงค่าเงินถ้าเป็นหุ้นไทย (.BK = บาท → USD)
-                            _suffix = item["ticker"].upper().split(".")[-1] \
-                                      if "." in item["ticker"] else ""
-                            _is_th  = _suffix == "BK"
-                            _fx     = _thb_usd if _is_th else 1.0
-                            _ccy    = "฿" if _is_th else "$"
-
-                            mkt_val_loc = price * item["qty"]          # มูลค่า local currency
-                            mkt_val_usd = mkt_val_loc * _fx            # แปลงเป็น USD
-                            cost_loc    = item["avg_cost"] * item["qty"]
-                            pnl_loc     = mkt_val_loc - cost_loc       # P&L ใน local currency
-                            pnl_p       = (price - item["avg_cost"]) / item["avg_cost"] * 100 \
-                                          if item["avg_cost"] > 0 else 0.0
-
-                            labels.append(item["ticker"])
-                            values.append(mkt_val_usd)                 # allocation ใช้ USD เสมอ
-                            rows.append({
-                                "Ticker":           item["ticker"],
-                                "Shares":           item["qty"],
-                                f"Avg Cost ({_ccy})": f"{item['avg_cost']:,.2f}",
-                                f"Price ({_ccy})":  f"{price:,.2f}",
-                                "Mkt Value ($)":    f"{mkt_val_usd:,.2f}",
-                                "P&L ($)":          f"{pnl_loc * _fx:+,.2f}",
-                                "P&L (%)":          f"{pnl_p:+.2f}%",
-                            })
-                            portfolio_raw_update[item["ticker"]] = {
-                                "qty":         item["qty"],
-                                "avg_cost":    item["avg_cost"],
-                                "price":       float(price),
-                                "mkt_val_usd": mkt_val_usd,
-                                "cost_usd":    cost_loc * _fx,
-                                "pnl_pct":     pnl_p,
-                                "fx":          _fx,
-                                "is_th":       _is_th,
-                            }
-                        except Exception:
-                            st.warning(f"ดึงข้อมูล {item['ticker']} ไม่ได้")
-                    st.session_state["portfolio_data"] = (rows, labels, values)
-                    st.session_state["port_thb_usd"]   = _thb_usd
-                    st.session_state["portfolio_raw"]  = portfolio_raw_update
-
-            if "portfolio_data" in st.session_state:
-                rows, labels, values = st.session_state["portfolio_data"]
-                _thb_usd_disp = st.session_state.get("port_thb_usd", 1.0/33.5)
-                if rows:
-                    total = sum(values)
-                    _has_bk = any(".BK" in r["Ticker"].upper() for r in rows)
-                    st.markdown(f"## 💰 Total (USD): **${total:,.2f}**")
-                    if _has_bk:
-                        st.caption(f"💱 อัตราแลกเปลี่ยน THB/USD = {_thb_usd_disp:.6f}  "
-                                   f"(≈ {1/_thb_usd_disp:.2f} ฿/$)  — มูลค่าหุ้นไทยแปลงเป็น USD แล้ว")
-                    st.divider()
-                    col_pie, col_tbl = st.columns([1, 1.3])
-                    with col_pie:
-                        # ── จัดกลุ่ม slice เล็ก (<2%) เป็น "Others" ──────────
-                        _pairs = sorted(zip(values, labels), reverse=True)
-                        _pie_vals, _pie_labels = [], []
-                        _other_val = 0.0
-                        for _v, _l in _pairs:
-                            if _v / total >= 0.02:
-                                _pie_vals.append(_v)
-                                _pie_labels.append(_l)
-                            else:
-                                _other_val += _v
-                        if _other_val > 0:
-                            _pie_vals.append(_other_val)
-                            _pie_labels.append("Others")
-                        # ─────────────────────────────────────────────────────
-                        fig_pie = go.Figure(go.Pie(
-                            labels=_pie_labels,
-                            values=_pie_vals,
-                            hole=0.50,
-                            textinfo="percent",
-                            textposition="inside",
-                            insidetextorientation="radial",
-                            hovertemplate="<b>%{label}</b><br>$%{value:,.2f}<br>%{percent}<extra></extra>",
-                            marker=dict(line=dict(color="#0e1117", width=2)),
-                            sort=False,
-                        ))
-                        fig_pie.update_layout(
-                            title=dict(text="Asset Allocation (USD)",
-                                       font=dict(size=15)),
-                            template="plotly_dark",
-                            height=420,
-                            margin=dict(l=10, r=10, t=50, b=10),
-                            paper_bgcolor="#0e1117",
-                            legend=dict(
-                                orientation="v",
-                                x=1.02, y=0.5,
-                                font=dict(size=11),
-                                bgcolor="rgba(0,0,0,0)",
-                            ),
-                            showlegend=True,
-                        )
-                        st.plotly_chart(fig_pie, use_container_width=True)
-                    with col_tbl:
-                        st.markdown("### Holdings Detail")
-                        def color_pnl(val):
-                            if isinstance(val, str) and "+" in val:
-                                return "color: #26a69a"
-                            elif isinstance(val, str) and "-" in val:
-                                return "color: #ef5350"
-                            return ""
-                        styled = pd.DataFrame(rows).style.applymap(
-                            color_pnl, subset=["P&L ($)", "P&L (%)"])
-                        st.dataframe(styled, hide_index=True, use_container_width=True)
-
-                    if False:
-                        _adv = st.session_state.get("adv_data", {})
-                        _man = _adv.get("manual_holdings", {})
-
-                        # ── ปุ่ม Global Shock / Reset ─────────────────────────
-                        _shock_col, _reset_col, _sp = st.columns([1.6, 1, 3.4])
-                        with _shock_col:
-                            _black_swan = st.button(
-                                "💀 Black Swan (−20%)",
-                                key="btn_blackswan",
-                                use_container_width=True,
-                            )
-                        with _reset_col:
-                            _reset_all = st.button(
-                                "🔄 Reset All",
-                                key="btn_reset_wi",
-                                use_container_width=True,
-                            )
-
-                        if _black_swan:
-                            for _tk_bs in _raw:
-                                st.session_state[f"whatif_pct_{_tk_bs}"] = -20
-                        if _reset_all:
-                            for _tk_rs in _raw:
-                                st.session_state[f"whatif_pct_{_tk_rs}"] = 0
-
-                        # ── Initialize slider defaults ────────────────────────
-                        for _tk_init in _raw:
-                            if f"whatif_pct_{_tk_init}" not in st.session_state:
-                                st.session_state[f"whatif_pct_{_tk_init}"] = 0
-
-                        # ── Sliders (ไม่เกิน 4 columns) ──────────────────────
-                        _slider_vals = {}
-                        _n_cols_wi   = min(len(_raw), 4)
-                        _cols_wi     = st.columns(_n_cols_wi)
-                        for _ci_wi, _tk_s in enumerate(_raw.keys()):
-                            with _cols_wi[_ci_wi % _n_cols_wi]:
-                                _slider_vals[_tk_s] = st.slider(
-                                    _tk_s,
-                                    min_value=-50,
-                                    max_value=50,
-                                    step=1,
-                                    key=f"whatif_pct_{_tk_s}",
-                                    format="%d%%",
-                                )
-
-                        # ── คำนวณ Simulated Market Value ─────────────────────
-                        _curr_total  = sum(d["mkt_val_usd"] for d in _raw.values())
-                        _sim_details = {}
-                        for _tk_c, _rd in _raw.items():
-                            _direct_chg = _slider_vals.get(_tk_c, 0) / 100.0
-                            _base_mv    = _rd["mkt_val_usd"]
-                            _tk_up      = _tk_c.upper().replace(".BK", "")
-
-                            # ETF look-through: ถ้า ticker นี้เป็น ETF ใน manual_holdings
-                            # effective_change = direct_slider + Σ(weight_i × constituent_slider_i)
-                            if _tk_up in _man:
-                                _const_adj = 0.0
-                                for _row_m in _man[_tk_up]:
-                                    _sym_up = _row_m["symbol"].upper()
-                                    _w      = _row_m["weight_pct"] / 100.0
-                                    _c_tk   = next(
-                                        (t for t in _raw
-                                         if t.upper().replace(".BK", "") == _sym_up),
-                                        None,
-                                    )
-                                    if _c_tk:
-                                        _const_adj += _w * (_slider_vals.get(_c_tk, 0) / 100.0)
-                                _eff_chg = _direct_chg + _const_adj
-                            else:
-                                _eff_chg = _direct_chg
-
-                            _sim_mv = _base_mv * (1 + _eff_chg)
-                            _sim_details[_tk_c] = {
-                                "curr_mv": _base_mv,
-                                "sim_mv":  _sim_mv,
-                                "delta":   _sim_mv - _base_mv,
-                            }
-
-                        _sim_total   = sum(d["sim_mv"] for d in _sim_details.values())
-                        _total_delta = _sim_total - _curr_total
-                        _pct_delta   = (_total_delta / _curr_total * 100) if _curr_total else 0.0
-
-                        # ── Comparison Metrics ────────────────────────────────
-                        st.markdown("#### 📊 Portfolio Comparison")
-                        _mc1, _mc2, _mc3 = st.columns(3)
-                        _mc1.metric("💼 Current Portfolio",
-                                    f"${_curr_total:,.2f}")
-                        _mc2.metric("🔮 Simulated Portfolio",
-                                    f"${_sim_total:,.2f}",
-                                    delta=f"${_total_delta:+,.2f}")
-                        _mc3.metric("📈 Change",
-                                    f"{_pct_delta:+.2f}%",
-                                    delta=f"${_total_delta:+,.2f}")
-
-                        # ── Delta Bar Chart ───────────────────────────────────
-                        _bar_tks    = list(_sim_details.keys())
-                        _bar_deltas = [_sim_details[t]["delta"] for t in _bar_tks]
-                        _bar_colors = [
-                            "#26a69a" if d >= 0 else "#ef5350"
-                            for d in _bar_deltas
-                        ]
-                        _fig_wi = go.Figure(go.Bar(
-                            x=_bar_tks,
-                            y=_bar_deltas,
-                            marker_color=_bar_colors,
-                            text=[f"${d:+,.0f}" for d in _bar_deltas],
-                            textposition="outside",
-                            hovertemplate=(
-                                "<b>%{x}</b><br>"
-                                "Delta: $%{y:+,.2f}<extra></extra>"
-                            ),
-                        ))
-                        _fig_wi.update_layout(
-                            title="Delta Market Value per Asset (Simulated − Current)",
-                            template="plotly_dark",
-                            height=360,
-                            xaxis_title=None,
-                            yaxis_title="USD",
-                            paper_bgcolor="#0e1117",
-                            plot_bgcolor="#0e1117",
-                            margin=dict(l=10, r=10, t=50, b=30),
-                            yaxis=dict(gridcolor="#2a2a3a"),
-                        )
-                        st.plotly_chart(_fig_wi, use_container_width=True)
-
-                        # ── Detail Table ──────────────────────────────────────
-                        with st.expander("📋 ดูรายละเอียดแต่ละตัว"):
-                            _wi_rows = []
-                            for _tk_d, _sd in _sim_details.items():
-                                _wi_rows.append({
-                                    "Ticker":        _tk_d,
-                                    "Change (%)":    f"{_slider_vals.get(_tk_d, 0):+d}%",
-                                    "Current ($)":   f"{_sd['curr_mv']:,.2f}",
-                                    "Simulated ($)": f"{_sd['sim_mv']:,.2f}",
-                                    "Delta ($)":     f"{_sd['delta']:+,.2f}",
-                                    "Weight Now":    (
-                                        f"{(_sd['curr_mv'] / _curr_total * 100):.1f}%"
-                                        if _curr_total else "—"
-                                    ),
-                                    "Weight Sim":    (
-                                        f"{(_sd['sim_mv'] / _sim_total * 100):.1f}%"
-                                        if _sim_total else "—"
-                                    ),
-                                })
-                            def _wi_color(val):
-                                if isinstance(val, str):
-                                    if "+" in val:
-                                        return "color: #26a69a"
-                                    if val.lstrip().startswith("-"):
-                                        return "color: #ef5350"
-                                return ""
-                            _wi_styled = pd.DataFrame(_wi_rows).style.applymap(
-                                _wi_color, subset=["Delta ($)", "Change (%)"])
-                            st.dataframe(_wi_styled, hide_index=True,
-                                         use_container_width=True)
-        else:
-            st.info("💡 กรอกพอร์ตในแท็บ **✏️ กรอกพอร์ต** แล้วกด **Save & Update P&L**")
-
-    # ════════════════════════════════════
-    # TAB 3 — Investment Diary
-    # ════════════════════════════════════
-    with tab_diary:
-        st.markdown("## 📔 Investment Diary")
-        st.caption("จดบันทึกเหตุผลการเทรด — บันทึกใน SQLite (ไม่หาย)")
-
-        col_form, col_hist = st.columns([1, 1.2])
-
-        with col_form:
-            st.markdown("### ✍️ New Entry")
-            with st.form("diary_form", clear_on_submit=True):
-                d_ticker = st.text_input("Ticker", placeholder="เช่น TSLA").upper().strip()
-                d_date   = st.date_input("วันที่", value=datetime.now().date())
-                d_type   = st.selectbox("ประเภท",
-                    ["🟢 Buy","🔴 Sell","🔵 Analysis","🟡 Watchlist","⚪ Note","⚠️ Risk"])
-                d_price  = st.number_input("ราคาอ้างอิง ($)", min_value=0.0,
-                    step=0.01, format="%.2f")
-                d_note   = st.text_area("บันทึก / เหตุผล",
-                    placeholder="- เหตุผลที่ซื้อ\n- Stop loss ที่ ...\n- Target ที่ ...",
-                    height=180)
-                ok = st.form_submit_button("💾 บันทึก",
-                    use_container_width=True, type="primary")
-
-            if ok:
-                if not d_ticker:
-                    st.warning("⚠️ ระบุ Ticker ก่อน")
-                elif not d_note.strip():
-                    st.warning("⚠️ กรอกบันทึกก่อน")
-                else:
-                    db_save(d_ticker, str(d_date), d_type, d_price, d_note.strip())
-                    st.success(f"✅ บันทึก [{d_ticker}] สำเร็จ!")
-                    st.rerun()
-
-        with col_hist:
-            st.markdown("### 📜 ประวัติ")
-            f1, f2 = st.columns(2)
-            with f1:
-                f_ticker = st.text_input("กรอง Ticker",
-                    placeholder="เว้นว่าง = ทั้งหมด").upper().strip()
-            with f2:
-                f_type = st.selectbox("กรอง Type",
-                    ["ทั้งหมด","🟢 Buy","🔴 Sell","🔵 Analysis",
-                     "🟡 Watchlist","⚪ Note","⚠️ Risk"])
-
-            diary_df = db_load(f_ticker)
-            if f_type != "ทั้งหมด":
-                diary_df = diary_df[diary_df["entry_type"] == f_type]
-
-            if diary_df.empty:
-                st.info("ยังไม่มีบันทึก — เริ่มจดได้เลย!")
-            else:
-                st.caption(f"พบ {len(diary_df)} รายการ")
-                for _, row in diary_df.iterrows():
-                    p_str = f"@ ${row['price_ref']:.2f}" \
-                            if row["price_ref"] and row["price_ref"] > 0 else ""
-                    hdr = (f"{row['entry_type']}  **{row['ticker']}**  "
-                           f"{p_str}  —  {row['entry_date']}  "
-                           f"*(saved {row['created_at']})*")
-                    with st.expander(hdr):
-                        st.markdown(row["note"])
-                        if st.button("🗑️ ลบ", key=f"del_{row['id']}", type="secondary"):
-                            db_delete_diary(int(row["id"]))
-                            st.rerun()
-
-    # ════════════════════════════════════
-    # TAB 4 — Watchlist
-    # ════════════════════════════════════
-    with tab_watch:
-        st.markdown("## 🌙 Watchlist")
-        st.caption("รายชื่อหุ้นที่จับตาดู — กด **Refresh Prices** เพื่ออัปเดตราคาทั้งหมด")
-
-        w1, w2, w3 = st.columns([1.5, 2, 1])
-        with w1:
-            wl_ticker = st.text_input("Ticker", placeholder="e.g. TSLA",
-                label_visibility="collapsed").upper().strip()
-        with w2:
-            wl_note = st.text_input("หมายเหตุ", placeholder="เช่น รอ breakout / ดูรายงาน Q3",
-                label_visibility="collapsed")
-        with w3:
-            if st.button("➕ Add to Watchlist", use_container_width=True):
-                if wl_ticker:
-                    wl_add(wl_ticker, wl_note)
-                    st.success(f"✅ เพิ่ม {wl_ticker} แล้ว")
-                    st.rerun()
-                else:
-                    st.warning("กรอก Ticker ก่อนนะครับ")
-
-        st.divider()
-
-        wl_df = wl_load()
-        if wl_df.empty:
-            st.info("💡 ยังไม่มีหุ้นใน Watchlist — เพิ่มด้านบนได้เลย")
-        else:
-            refresh_btn = st.button(
-                "🔄 Refresh Prices", use_container_width=True, type="primary")
-
-            if refresh_btn or "wl_prices" in st.session_state:
-                if refresh_btn:
-                    with st.spinner("⏳ กำลังดึงราคา Watchlist…"):
-                        wl_rows = []
-                        for _, wrow in wl_df.iterrows():
-                            try:
-                                hist = yf.Ticker(wrow["ticker"]).history(period="2d")
-                                if hist.empty:
-                                    raise ValueError("no data")
-                                p   = hist["Close"].iloc[-1]
-                                p0  = hist["Close"].iloc[-2] if len(hist) >= 2 else p
-                                chg = p - p0
-                                chg_p = chg / p0 * 100 if p0 else 0
-                                wl_rows.append({
-                                    "_id":       wrow["id"],
-                                    "Ticker":    wrow["ticker"],
-                                    "Price ($)": round(p, 2),
-                                    "Chg ($)":   f"{chg:+.2f}",
-                                    "Chg (%)":   f"{chg_p:+.2f}%",
-                                    "Note":      wrow["note"] or "",
-                                    "Added":     wrow["added_at"],
-                                })
-                            except Exception:
-                                wl_rows.append({
-                                    "_id":       wrow["id"],
-                                    "Ticker":    wrow["ticker"],
-                                    "Price ($)": "N/A",
-                                    "Chg ($)":   "—",
-                                    "Chg (%)":   "—",
-                                    "Note":      wrow["note"] or "",
-                                    "Added":     wrow["added_at"],
-                                })
-                        st.session_state["wl_prices"] = wl_rows
-
-                wl_rows = st.session_state.get("wl_prices", [])
-
-                if wl_rows:
-                    st.caption(f"อัปเดตล่าสุด: {datetime.now().strftime('%H:%M:%S')}")
-
-                    for wr in wl_rows:
-                        col_t, col_p, col_c, col_cp, col_n, col_btn = st.columns(
-                            [1, 1, 0.8, 0.8, 2.5, 0.6])
-                        with col_t:
-                            st.markdown(f"**{wr['Ticker']}**")
-                        with col_p:
-                            p_val = wr['Price ($)']
-                            st.markdown(f"`${p_val}`" if p_val != "N/A" else "`N/A`")
-                        with col_c:
-                            chg_str = wr['Chg ($)']
-                            color = "positive" if "+" in str(chg_str) else \
-                                    "negative" if "-" in str(chg_str) else ""
-                            st.markdown(
-                                f'<span class="{color}">{chg_str}</span>',
-                                unsafe_allow_html=True)
-                        with col_cp:
-                            cp_str = wr['Chg (%)']
-                            color2 = "positive" if "+" in str(cp_str) else \
-                                     "negative" if "-" in str(cp_str) else ""
-                            st.markdown(
-                                f'<span class="{color2}">{cp_str}</span>',
-                                unsafe_allow_html=True)
-                        with col_n:
-                            st.caption(wr["Note"])
-                        with col_btn:
-                            if st.button("🗑️", key=f"wl_del_{wr['_id']}",
-                                         help="ลบออกจาก Watchlist"):
-                                wl_delete(int(wr["_id"]))
-                                if "wl_prices" in st.session_state:
-                                    del st.session_state["wl_prices"]
-                                st.rerun()
-
-                    st.divider()
-
-                    with st.expander("📈 เปรียบเทียบ % Return ของ Watchlist"):
-                        tickers_in_wl = [wr["Ticker"] for wr in wl_rows
-                                         if wr["Price ($)"] != "N/A"]
-                        if tickers_in_wl:
-                            with st.spinner("กำลังโหลดกราฟ…"):
-                                fig_cmp = go.Figure()
-                                for tk in tickers_in_wl:
-                                    try:
-                                        h = yf.Ticker(tk).history(period="3mo")
-                                        if h.empty:
-                                            continue
-                                        norm = (h["Close"] / h["Close"].iloc[0] - 1) * 100
-                                        fig_cmp.add_trace(go.Scatter(
-                                            x=h.index, y=norm, name=tk, mode="lines"))
-                                    except Exception:
-                                        pass
-                                fig_cmp.update_layout(
-                                    title="% Return (3 เดือน)",
-                                    template="plotly_dark",
-                                    yaxis_title="% Return",
-                                    height=380,
-                                    hovermode="x unified",
-                                    paper_bgcolor="#0e1117",
-                                    plot_bgcolor="#0e1117",
-                                )
-                                st.plotly_chart(fig_cmp, use_container_width=True)
-            else:
-                st.caption(f"มี {len(wl_df)} หุ้นใน Watchlist — กด Refresh Prices เพื่อดูราคา")
-                for _, wrow in wl_df.iterrows():
-                    c1_, c2_, c3_ = st.columns([1, 3, 0.5])
-                    with c1_:
-                        st.markdown(f"**{wrow['ticker']}**")
-                    with c2_:
-                        st.caption(wrow["note"] or "")
-                    with c3_:
-                        if st.button("🗑️", key=f"wl_pre_{wrow['id']}"):
-                            wl_delete(int(wrow["id"]))
-                            st.rerun()
-
-        # ════════════════════════════════════════════════════════════════
+        # ── 🎯 Strategic Entry Planner (see below) ─────────────
         # 🎯  Strategic Entry Planner
         # ════════════════════════════════════════════════════════════════
         st.divider()
@@ -1704,6 +1201,518 @@ def main():
             )
 
     # ════════════════════════════════════════════════════════════════════════
+
+    if False:  # 💼 Portfolio P&L — hidden (not removed, just disabled)
+        # TAB 2 — Portfolio
+        # ════════════════════════════════════
+        with tab_port:
+            if update_portfolio_btn or "portfolio_data" in st.session_state:
+                valid = [i for i in st.session_state.portfolio
+                         if i["ticker"] and i["qty"] > 0]
+                if not valid:
+                    st.warning("⚠️ กรุณากรอกข้อมูลหุ้นในแท็บ **✏️ กรอกพอร์ต** ก่อน")
+                else:
+                    with st.spinner("⏳ กำลังดึงราคา…"):
+                        rows, labels, values = [], [], []
+                        portfolio_raw_update  = {}          # raw floats สำหรับ What-if Simulator
+
+                        # ── ดึงอัตราแลกเปลี่ยน THB/USD ครั้งเดียว ──────────────
+                        _thb_usd = 0.0
+                        try:
+                            _fx_hist = yf.Ticker("THBUSD=X").history(period="5d")
+                            if not _fx_hist.empty:
+                                _thb_usd = float(_fx_hist["Close"].iloc[-1])
+                        except Exception:
+                            pass
+                        if _thb_usd <= 0:
+                            _thb_usd = 1.0 / 33.5   # fallback ~33.5 THB per USD
+                        # ─────────────────────────────────────────────────────────
+
+                        for item in valid:
+                            try:
+                                hist = yf.Ticker(item["ticker"]).history(period="2d")
+                                if hist.empty:
+                                    continue
+                                price = hist["Close"].iloc[-1]
+
+                                # แปลงค่าเงินถ้าเป็นหุ้นไทย (.BK = บาท → USD)
+                                _suffix = item["ticker"].upper().split(".")[-1] \
+                                          if "." in item["ticker"] else ""
+                                _is_th  = _suffix == "BK"
+                                _fx     = _thb_usd if _is_th else 1.0
+                                _ccy    = "฿" if _is_th else "$"
+
+                                mkt_val_loc = price * item["qty"]          # มูลค่า local currency
+                                mkt_val_usd = mkt_val_loc * _fx            # แปลงเป็น USD
+                                cost_loc    = item["avg_cost"] * item["qty"]
+                                pnl_loc     = mkt_val_loc - cost_loc       # P&L ใน local currency
+                                pnl_p       = (price - item["avg_cost"]) / item["avg_cost"] * 100 \
+                                              if item["avg_cost"] > 0 else 0.0
+
+                                labels.append(item["ticker"])
+                                values.append(mkt_val_usd)                 # allocation ใช้ USD เสมอ
+                                rows.append({
+                                    "Ticker":           item["ticker"],
+                                    "Shares":           item["qty"],
+                                    f"Avg Cost ({_ccy})": f"{item['avg_cost']:,.2f}",
+                                    f"Price ({_ccy})":  f"{price:,.2f}",
+                                    "Mkt Value ($)":    f"{mkt_val_usd:,.2f}",
+                                    "P&L ($)":          f"{pnl_loc * _fx:+,.2f}",
+                                    "P&L (%)":          f"{pnl_p:+.2f}%",
+                                })
+                                portfolio_raw_update[item["ticker"]] = {
+                                    "qty":         item["qty"],
+                                    "avg_cost":    item["avg_cost"],
+                                    "price":       float(price),
+                                    "mkt_val_usd": mkt_val_usd,
+                                    "cost_usd":    cost_loc * _fx,
+                                    "pnl_pct":     pnl_p,
+                                    "fx":          _fx,
+                                    "is_th":       _is_th,
+                                }
+                            except Exception:
+                                st.warning(f"ดึงข้อมูล {item['ticker']} ไม่ได้")
+                        st.session_state["portfolio_data"] = (rows, labels, values)
+                        st.session_state["port_thb_usd"]   = _thb_usd
+                        st.session_state["portfolio_raw"]  = portfolio_raw_update
+
+                if "portfolio_data" in st.session_state:
+                    rows, labels, values = st.session_state["portfolio_data"]
+                    _thb_usd_disp = st.session_state.get("port_thb_usd", 1.0/33.5)
+                    if rows:
+                        total = sum(values)
+                        _has_bk = any(".BK" in r["Ticker"].upper() for r in rows)
+                        st.markdown(f"## 💰 Total (USD): **${total:,.2f}**")
+                        if _has_bk:
+                            st.caption(f"💱 อัตราแลกเปลี่ยน THB/USD = {_thb_usd_disp:.6f}  "
+                                       f"(≈ {1/_thb_usd_disp:.2f} ฿/$)  — มูลค่าหุ้นไทยแปลงเป็น USD แล้ว")
+                        st.divider()
+                        col_pie, col_tbl = st.columns([1, 1.3])
+                        with col_pie:
+                            # ── จัดกลุ่ม slice เล็ก (<2%) เป็น "Others" ──────────
+                            _pairs = sorted(zip(values, labels), reverse=True)
+                            _pie_vals, _pie_labels = [], []
+                            _other_val = 0.0
+                            for _v, _l in _pairs:
+                                if _v / total >= 0.02:
+                                    _pie_vals.append(_v)
+                                    _pie_labels.append(_l)
+                                else:
+                                    _other_val += _v
+                            if _other_val > 0:
+                                _pie_vals.append(_other_val)
+                                _pie_labels.append("Others")
+                            # ─────────────────────────────────────────────────────
+                            fig_pie = go.Figure(go.Pie(
+                                labels=_pie_labels,
+                                values=_pie_vals,
+                                hole=0.50,
+                                textinfo="percent",
+                                textposition="inside",
+                                insidetextorientation="radial",
+                                hovertemplate="<b>%{label}</b><br>$%{value:,.2f}<br>%{percent}<extra></extra>",
+                                marker=dict(line=dict(color="#0e1117", width=2)),
+                                sort=False,
+                            ))
+                            fig_pie.update_layout(
+                                title=dict(text="Asset Allocation (USD)",
+                                           font=dict(size=15)),
+                                template="plotly_dark",
+                                height=420,
+                                margin=dict(l=10, r=10, t=50, b=10),
+                                paper_bgcolor="#0e1117",
+                                legend=dict(
+                                    orientation="v",
+                                    x=1.02, y=0.5,
+                                    font=dict(size=11),
+                                    bgcolor="rgba(0,0,0,0)",
+                                ),
+                                showlegend=True,
+                            )
+                            st.plotly_chart(fig_pie, use_container_width=True)
+                        with col_tbl:
+                            st.markdown("### Holdings Detail")
+                            def color_pnl(val):
+                                if isinstance(val, str) and "+" in val:
+                                    return "color: #26a69a"
+                                elif isinstance(val, str) and "-" in val:
+                                    return "color: #ef5350"
+                                return ""
+                            styled = pd.DataFrame(rows).style.applymap(
+                                color_pnl, subset=["P&L ($)", "P&L (%)"])
+                            st.dataframe(styled, hide_index=True, use_container_width=True)
+
+                        if False:
+                            _adv = st.session_state.get("adv_data", {})
+                            _man = _adv.get("manual_holdings", {})
+
+                            # ── ปุ่ม Global Shock / Reset ─────────────────────────
+                            _shock_col, _reset_col, _sp = st.columns([1.6, 1, 3.4])
+                            with _shock_col:
+                                _black_swan = st.button(
+                                    "💀 Black Swan (−20%)",
+                                    key="btn_blackswan",
+                                    use_container_width=True,
+                                )
+                            with _reset_col:
+                                _reset_all = st.button(
+                                    "🔄 Reset All",
+                                    key="btn_reset_wi",
+                                    use_container_width=True,
+                                )
+
+                            if _black_swan:
+                                for _tk_bs in _raw:
+                                    st.session_state[f"whatif_pct_{_tk_bs}"] = -20
+                            if _reset_all:
+                                for _tk_rs in _raw:
+                                    st.session_state[f"whatif_pct_{_tk_rs}"] = 0
+
+                            # ── Initialize slider defaults ────────────────────────
+                            for _tk_init in _raw:
+                                if f"whatif_pct_{_tk_init}" not in st.session_state:
+                                    st.session_state[f"whatif_pct_{_tk_init}"] = 0
+
+                            # ── Sliders (ไม่เกิน 4 columns) ──────────────────────
+                            _slider_vals = {}
+                            _n_cols_wi   = min(len(_raw), 4)
+                            _cols_wi     = st.columns(_n_cols_wi)
+                            for _ci_wi, _tk_s in enumerate(_raw.keys()):
+                                with _cols_wi[_ci_wi % _n_cols_wi]:
+                                    _slider_vals[_tk_s] = st.slider(
+                                        _tk_s,
+                                        min_value=-50,
+                                        max_value=50,
+                                        step=1,
+                                        key=f"whatif_pct_{_tk_s}",
+                                        format="%d%%",
+                                    )
+
+                            # ── คำนวณ Simulated Market Value ─────────────────────
+                            _curr_total  = sum(d["mkt_val_usd"] for d in _raw.values())
+                            _sim_details = {}
+                            for _tk_c, _rd in _raw.items():
+                                _direct_chg = _slider_vals.get(_tk_c, 0) / 100.0
+                                _base_mv    = _rd["mkt_val_usd"]
+                                _tk_up      = _tk_c.upper().replace(".BK", "")
+
+                                # ETF look-through: ถ้า ticker นี้เป็น ETF ใน manual_holdings
+                                # effective_change = direct_slider + Σ(weight_i × constituent_slider_i)
+                                if _tk_up in _man:
+                                    _const_adj = 0.0
+                                    for _row_m in _man[_tk_up]:
+                                        _sym_up = _row_m["symbol"].upper()
+                                        _w      = _row_m["weight_pct"] / 100.0
+                                        _c_tk   = next(
+                                            (t for t in _raw
+                                             if t.upper().replace(".BK", "") == _sym_up),
+                                            None,
+                                        )
+                                        if _c_tk:
+                                            _const_adj += _w * (_slider_vals.get(_c_tk, 0) / 100.0)
+                                    _eff_chg = _direct_chg + _const_adj
+                                else:
+                                    _eff_chg = _direct_chg
+
+                                _sim_mv = _base_mv * (1 + _eff_chg)
+                                _sim_details[_tk_c] = {
+                                    "curr_mv": _base_mv,
+                                    "sim_mv":  _sim_mv,
+                                    "delta":   _sim_mv - _base_mv,
+                                }
+
+                            _sim_total   = sum(d["sim_mv"] for d in _sim_details.values())
+                            _total_delta = _sim_total - _curr_total
+                            _pct_delta   = (_total_delta / _curr_total * 100) if _curr_total else 0.0
+
+                            # ── Comparison Metrics ────────────────────────────────
+                            st.markdown("#### 📊 Portfolio Comparison")
+                            _mc1, _mc2, _mc3 = st.columns(3)
+                            _mc1.metric("💼 Current Portfolio",
+                                        f"${_curr_total:,.2f}")
+                            _mc2.metric("🔮 Simulated Portfolio",
+                                        f"${_sim_total:,.2f}",
+                                        delta=f"${_total_delta:+,.2f}")
+                            _mc3.metric("📈 Change",
+                                        f"{_pct_delta:+.2f}%",
+                                        delta=f"${_total_delta:+,.2f}")
+
+                            # ── Delta Bar Chart ───────────────────────────────────
+                            _bar_tks    = list(_sim_details.keys())
+                            _bar_deltas = [_sim_details[t]["delta"] for t in _bar_tks]
+                            _bar_colors = [
+                                "#26a69a" if d >= 0 else "#ef5350"
+                                for d in _bar_deltas
+                            ]
+                            _fig_wi = go.Figure(go.Bar(
+                                x=_bar_tks,
+                                y=_bar_deltas,
+                                marker_color=_bar_colors,
+                                text=[f"${d:+,.0f}" for d in _bar_deltas],
+                                textposition="outside",
+                                hovertemplate=(
+                                    "<b>%{x}</b><br>"
+                                    "Delta: $%{y:+,.2f}<extra></extra>"
+                                ),
+                            ))
+                            _fig_wi.update_layout(
+                                title="Delta Market Value per Asset (Simulated − Current)",
+                                template="plotly_dark",
+                                height=360,
+                                xaxis_title=None,
+                                yaxis_title="USD",
+                                paper_bgcolor="#0e1117",
+                                plot_bgcolor="#0e1117",
+                                margin=dict(l=10, r=10, t=50, b=30),
+                                yaxis=dict(gridcolor="#2a2a3a"),
+                            )
+                            st.plotly_chart(_fig_wi, use_container_width=True)
+
+                            # ── Detail Table ──────────────────────────────────────
+                            with st.expander("📋 ดูรายละเอียดแต่ละตัว"):
+                                _wi_rows = []
+                                for _tk_d, _sd in _sim_details.items():
+                                    _wi_rows.append({
+                                        "Ticker":        _tk_d,
+                                        "Change (%)":    f"{_slider_vals.get(_tk_d, 0):+d}%",
+                                        "Current ($)":   f"{_sd['curr_mv']:,.2f}",
+                                        "Simulated ($)": f"{_sd['sim_mv']:,.2f}",
+                                        "Delta ($)":     f"{_sd['delta']:+,.2f}",
+                                        "Weight Now":    (
+                                            f"{(_sd['curr_mv'] / _curr_total * 100):.1f}%"
+                                            if _curr_total else "—"
+                                        ),
+                                        "Weight Sim":    (
+                                            f"{(_sd['sim_mv'] / _sim_total * 100):.1f}%"
+                                            if _sim_total else "—"
+                                        ),
+                                    })
+                                def _wi_color(val):
+                                    if isinstance(val, str):
+                                        if "+" in val:
+                                            return "color: #26a69a"
+                                        if val.lstrip().startswith("-"):
+                                            return "color: #ef5350"
+                                    return ""
+                                _wi_styled = pd.DataFrame(_wi_rows).style.applymap(
+                                    _wi_color, subset=["Delta ($)", "Change (%)"])
+                                st.dataframe(_wi_styled, hide_index=True,
+                                             use_container_width=True)
+            else:
+                st.info("💡 กรอกพอร์ตในแท็บ **✏️ กรอกพอร์ต** แล้วกด **Save & Update P&L**")
+
+        # ════════════════════════════════════
+    if False:  # 📔 Investment Diary — hidden
+        # TAB 3 — Investment Diary
+        # ════════════════════════════════════
+        with tab_diary:
+            st.markdown("## 📔 Investment Diary")
+            st.caption("จดบันทึกเหตุผลการเทรด — บันทึกใน SQLite (ไม่หาย)")
+
+            col_form, col_hist = st.columns([1, 1.2])
+
+            with col_form:
+                st.markdown("### ✍️ New Entry")
+                with st.form("diary_form", clear_on_submit=True):
+                    d_ticker = st.text_input("Ticker", placeholder="เช่น TSLA").upper().strip()
+                    d_date   = st.date_input("วันที่", value=datetime.now().date())
+                    d_type   = st.selectbox("ประเภท",
+                        ["🟢 Buy","🔴 Sell","🔵 Analysis","🟡 Watchlist","⚪ Note","⚠️ Risk"])
+                    d_price  = st.number_input("ราคาอ้างอิง ($)", min_value=0.0,
+                        step=0.01, format="%.2f")
+                    d_note   = st.text_area("บันทึก / เหตุผล",
+                        placeholder="- เหตุผลที่ซื้อ\n- Stop loss ที่ ...\n- Target ที่ ...",
+                        height=180)
+                    ok = st.form_submit_button("💾 บันทึก",
+                        use_container_width=True, type="primary")
+
+                if ok:
+                    if not d_ticker:
+                        st.warning("⚠️ ระบุ Ticker ก่อน")
+                    elif not d_note.strip():
+                        st.warning("⚠️ กรอกบันทึกก่อน")
+                    else:
+                        db_save(d_ticker, str(d_date), d_type, d_price, d_note.strip())
+                        st.success(f"✅ บันทึก [{d_ticker}] สำเร็จ!")
+                        st.rerun()
+
+            with col_hist:
+                st.markdown("### 📜 ประวัติ")
+                f1, f2 = st.columns(2)
+                with f1:
+                    f_ticker = st.text_input("กรอง Ticker",
+                        placeholder="เว้นว่าง = ทั้งหมด").upper().strip()
+                with f2:
+                    f_type = st.selectbox("กรอง Type",
+                        ["ทั้งหมด","🟢 Buy","🔴 Sell","🔵 Analysis",
+                         "🟡 Watchlist","⚪ Note","⚠️ Risk"])
+
+                diary_df = db_load(f_ticker)
+                if f_type != "ทั้งหมด":
+                    diary_df = diary_df[diary_df["entry_type"] == f_type]
+
+                if diary_df.empty:
+                    st.info("ยังไม่มีบันทึก — เริ่มจดได้เลย!")
+                else:
+                    st.caption(f"พบ {len(diary_df)} รายการ")
+                    for _, row in diary_df.iterrows():
+                        p_str = f"@ ${row['price_ref']:.2f}" \
+                                if row["price_ref"] and row["price_ref"] > 0 else ""
+                        hdr = (f"{row['entry_type']}  **{row['ticker']}**  "
+                               f"{p_str}  —  {row['entry_date']}  "
+                               f"*(saved {row['created_at']})*")
+                        with st.expander(hdr):
+                            st.markdown(row["note"])
+                            if st.button("🗑️ ลบ", key=f"del_{row['id']}", type="secondary"):
+                                db_delete_diary(int(row["id"]))
+                                st.rerun()
+
+        # ════════════════════════════════════
+    if False:  # 🌙 Watchlist — hidden
+        # TAB 4 — Watchlist
+        # ════════════════════════════════════
+        with tab_watch:
+            st.markdown("## 🌙 Watchlist")
+            st.caption("รายชื่อหุ้นที่จับตาดู — กด **Refresh Prices** เพื่ออัปเดตราคาทั้งหมด")
+
+            w1, w2, w3 = st.columns([1.5, 2, 1])
+            with w1:
+                wl_ticker = st.text_input("Ticker", placeholder="e.g. TSLA",
+                    label_visibility="collapsed").upper().strip()
+            with w2:
+                wl_note = st.text_input("หมายเหตุ", placeholder="เช่น รอ breakout / ดูรายงาน Q3",
+                    label_visibility="collapsed")
+            with w3:
+                if st.button("➕ Add to Watchlist", use_container_width=True):
+                    if wl_ticker:
+                        wl_add(wl_ticker, wl_note)
+                        st.success(f"✅ เพิ่ม {wl_ticker} แล้ว")
+                        st.rerun()
+                    else:
+                        st.warning("กรอก Ticker ก่อนนะครับ")
+
+            st.divider()
+
+            wl_df = wl_load()
+            if wl_df.empty:
+                st.info("💡 ยังไม่มีหุ้นใน Watchlist — เพิ่มด้านบนได้เลย")
+            else:
+                refresh_btn = st.button(
+                    "🔄 Refresh Prices", use_container_width=True, type="primary")
+
+                if refresh_btn or "wl_prices" in st.session_state:
+                    if refresh_btn:
+                        with st.spinner("⏳ กำลังดึงราคา Watchlist…"):
+                            wl_rows = []
+                            for _, wrow in wl_df.iterrows():
+                                try:
+                                    hist = yf.Ticker(wrow["ticker"]).history(period="2d")
+                                    if hist.empty:
+                                        raise ValueError("no data")
+                                    p   = hist["Close"].iloc[-1]
+                                    p0  = hist["Close"].iloc[-2] if len(hist) >= 2 else p
+                                    chg = p - p0
+                                    chg_p = chg / p0 * 100 if p0 else 0
+                                    wl_rows.append({
+                                        "_id":       wrow["id"],
+                                        "Ticker":    wrow["ticker"],
+                                        "Price ($)": round(p, 2),
+                                        "Chg ($)":   f"{chg:+.2f}",
+                                        "Chg (%)":   f"{chg_p:+.2f}%",
+                                        "Note":      wrow["note"] or "",
+                                        "Added":     wrow["added_at"],
+                                    })
+                                except Exception:
+                                    wl_rows.append({
+                                        "_id":       wrow["id"],
+                                        "Ticker":    wrow["ticker"],
+                                        "Price ($)": "N/A",
+                                        "Chg ($)":   "—",
+                                        "Chg (%)":   "—",
+                                        "Note":      wrow["note"] or "",
+                                        "Added":     wrow["added_at"],
+                                    })
+                            st.session_state["wl_prices"] = wl_rows
+
+                    wl_rows = st.session_state.get("wl_prices", [])
+
+                    if wl_rows:
+                        st.caption(f"อัปเดตล่าสุด: {datetime.now().strftime('%H:%M:%S')}")
+
+                        for wr in wl_rows:
+                            col_t, col_p, col_c, col_cp, col_n, col_btn = st.columns(
+                                [1, 1, 0.8, 0.8, 2.5, 0.6])
+                            with col_t:
+                                st.markdown(f"**{wr['Ticker']}**")
+                            with col_p:
+                                p_val = wr['Price ($)']
+                                st.markdown(f"`${p_val}`" if p_val != "N/A" else "`N/A`")
+                            with col_c:
+                                chg_str = wr['Chg ($)']
+                                color = "positive" if "+" in str(chg_str) else \
+                                        "negative" if "-" in str(chg_str) else ""
+                                st.markdown(
+                                    f'<span class="{color}">{chg_str}</span>',
+                                    unsafe_allow_html=True)
+                            with col_cp:
+                                cp_str = wr['Chg (%)']
+                                color2 = "positive" if "+" in str(cp_str) else \
+                                         "negative" if "-" in str(cp_str) else ""
+                                st.markdown(
+                                    f'<span class="{color2}">{cp_str}</span>',
+                                    unsafe_allow_html=True)
+                            with col_n:
+                                st.caption(wr["Note"])
+                            with col_btn:
+                                if st.button("🗑️", key=f"wl_del_{wr['_id']}",
+                                             help="ลบออกจาก Watchlist"):
+                                    wl_delete(int(wr["_id"]))
+                                    if "wl_prices" in st.session_state:
+                                        del st.session_state["wl_prices"]
+                                    st.rerun()
+
+                        st.divider()
+
+                        with st.expander("📈 เปรียบเทียบ % Return ของ Watchlist"):
+                            tickers_in_wl = [wr["Ticker"] for wr in wl_rows
+                                             if wr["Price ($)"] != "N/A"]
+                            if tickers_in_wl:
+                                with st.spinner("กำลังโหลดกราฟ…"):
+                                    fig_cmp = go.Figure()
+                                    for tk in tickers_in_wl:
+                                        try:
+                                            h = yf.Ticker(tk).history(period="3mo")
+                                            if h.empty:
+                                                continue
+                                            norm = (h["Close"] / h["Close"].iloc[0] - 1) * 100
+                                            fig_cmp.add_trace(go.Scatter(
+                                                x=h.index, y=norm, name=tk, mode="lines"))
+                                        except Exception:
+                                            pass
+                                    fig_cmp.update_layout(
+                                        title="% Return (3 เดือน)",
+                                        template="plotly_dark",
+                                        yaxis_title="% Return",
+                                        height=380,
+                                        hovermode="x unified",
+                                        paper_bgcolor="#0e1117",
+                                        plot_bgcolor="#0e1117",
+                                    )
+                                    st.plotly_chart(fig_cmp, use_container_width=True)
+                else:
+                    st.caption(f"มี {len(wl_df)} หุ้นใน Watchlist — กด Refresh Prices เพื่อดูราคา")
+                    for _, wrow in wl_df.iterrows():
+                        c1_, c2_, c3_ = st.columns([1, 3, 0.5])
+                        with c1_:
+                            st.markdown(f"**{wrow['ticker']}**")
+                        with c2_:
+                            st.caption(wrow["note"] or "")
+                        with c3_:
+                            if st.button("🗑️", key=f"wl_pre_{wrow['id']}"):
+                                wl_delete(int(wrow["id"]))
+                                st.rerun()
+
+            # ════════════════════════════════════════════════════════════════
     # TAB 5 — 🚀 ADVANCED ANALYTICS  (NEW v3)
     # ════════════════════════════════════════════════════════════════════════
     with tab_adv:
