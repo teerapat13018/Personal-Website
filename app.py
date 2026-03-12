@@ -48,12 +48,79 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    .positive { color: #26a69a; font-weight: bold; }
-    .negative { color: #ef5350; font-weight: bold; }
-    div[data-testid="stTabs"] button { font-size: 15px; }
-    /* Hide sidebar toggle button */
+    /* ── Typography ─────────────────────────────────────────────────────── */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    html, body, [class*="css"] {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    /* ── Hide sidebar ───────────────────────────────────────────────────── */
     button[data-testid="collapsedControl"] { display: none !important; }
-    section[data-testid="stSidebar"] { display: none !important; }
+    section[data-testid="stSidebar"]       { display: none !important; }
+
+    /* ── Tabs ───────────────────────────────────────────────────────────── */
+    div[data-testid="stTabs"] button {
+        font-size: 14px;
+        font-weight: 500;
+        padding: 8px 14px;
+    }
+
+    /* ── Metric cards ───────────────────────────────────────────────────── */
+    div[data-testid="metric-container"] {
+        background: linear-gradient(145deg, #1e1e2e 0%, #16162a 100%);
+        border: 1px solid rgba(124, 58, 237, 0.2);
+        border-radius: 14px;
+        padding: 18px 20px;
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4),
+                    0 0 0 1px rgba(255,255,255,0.03);
+    }
+    div[data-testid="metric-container"] label {
+        font-size: 12px !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #8b8ba7 !important;
+    }
+    div[data-testid="metric-container"] [data-testid="stMetricValue"] {
+        font-size: 26px !important;
+        font-weight: 700 !important;
+        letter-spacing: -0.02em;
+    }
+
+    /* ── Primary button ─────────────────────────────────────────────────── */
+    div.stButton button[kind="primary"],
+    div.stButton > button[data-testid="baseButton-primary"] {
+        background: linear-gradient(135deg, #6d28d9 0%, #4c1d95 100%);
+        border: none;
+        border-radius: 10px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        box-shadow: 0 4px 14px rgba(109, 40, 217, 0.35);
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    div.stButton button[kind="primary"]:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 20px rgba(109, 40, 217, 0.5);
+    }
+
+    /* ── Semantic text colours ──────────────────────────────────────────── */
+    .positive { color: #34d399; font-weight: 700; }
+    .negative { color: #f87171; font-weight: 700; }
+
+    /* ── Action item cards ──────────────────────────────────────────────── */
+    .action-card {
+        border-radius: 10px;
+        padding: 10px 14px;
+        margin-bottom: 8px;
+        font-size: 13px;
+        line-height: 1.5;
+    }
+    .action-buy  { background:#0d2b1d; border-left:4px solid #34d399; }
+    .action-warn { background:#2d2200; border-left:4px solid #fbbf24; }
+    .action-risk { background:#2d1b1b; border-left:4px solid #f87171; }
+    .action-info { background:#1a1a2e; border-left:4px solid #818cf8; }
+
+    /* ── Legacy cards (preserved) ───────────────────────────────────────── */
     .news-card {
         background: #1a1a2e;
         border-radius: 8px;
@@ -63,14 +130,14 @@ st.markdown("""
     }
     .alert-triggered {
         background: #2d1b1b;
-        border-left: 4px solid #ef5350;
+        border-left: 4px solid #f87171;
         border-radius: 6px;
         padding: 8px 12px;
         margin: 4px 0;
     }
     .rebal-alert {
         background: #2d1f00;
-        border-left: 4px solid #ff9800;
+        border-left: 4px solid #fbbf24;
         border-radius: 6px;
         padding: 8px 12px;
         margin: 3px 0;
@@ -78,11 +145,29 @@ st.markdown("""
     }
     .rebal-ok {
         background: #0d2b1d;
-        border-left: 4px solid #26a69a;
+        border-left: 4px solid #34d399;
         border-radius: 6px;
         padding: 8px 12px;
         margin: 3px 0;
         font-size: 13px;
+    }
+
+    /* ── Mobile responsive ──────────────────────────────────────────────── */
+    @media (max-width: 640px) {
+        div[data-testid="metric-container"] {
+            padding: 12px 14px;
+            border-radius: 10px;
+        }
+        div[data-testid="metric-container"] [data-testid="stMetricValue"] {
+            font-size: 20px !important;
+        }
+        div[data-testid="stTabs"] button {
+            font-size: 12px;
+            padding: 6px 8px;
+        }
+        .action-card { font-size: 12px; }
+        h1 { font-size: 1.4rem !important; }
+        h2 { font-size: 1.15rem !important; }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -463,6 +548,92 @@ def adv_compute_drawdown(port_value: pd.Series):
     return running_max, drawdown_pct, mdd
 
 
+# ─── Section 5E: Executive Summary Snapshot ─────────────────────────────────
+
+@st.cache_data(ttl=300)
+def _exec_snapshot(portfolio_items: tuple) -> dict:
+    """Fetch latest prices for all portfolio tickers and compute summary stats.
+    Cached 5 min to avoid hammering yfinance on every rerun.
+    Args: portfolio_items — tuple of (ticker: str, qty: float, avg_cost: float)
+    """
+    empty = {
+        "rows": [], "total_mkt": 0.0, "total_cost": 0.0,
+        "total_chg": 0.0, "total_chg_pct": 0.0,
+        "total_pnl_pct": 0.0, "prices": {}, "var95": None,
+    }
+    if not portfolio_items:
+        return empty
+
+    # ── FX: THB → USD ─────────────────────────────────
+    thb_usd = 1.0 / 33.5
+    try:
+        _fx_h = yf.Ticker("THBUSD=X").history(period="5d")
+        if not _fx_h.empty:
+            thb_usd = float(_fx_h["Close"].iloc[-1])
+    except Exception:
+        pass
+
+    rows, prices, port_series = [], {}, {}
+    total_mkt = total_cost = prev_mkt = 0.0
+
+    for _entry in portfolio_items:
+        tk, qty, cost = str(_entry[0]).strip().upper(), float(_entry[1]), float(_entry[2])
+        if not tk or qty <= 0:
+            continue
+        try:
+            h = yf.Ticker(tk).history(period="30d")
+            if h.empty:
+                continue
+            curr = float(h["Close"].iloc[-1])
+            prev = float(h["Close"].iloc[-2]) if len(h) >= 2 else curr
+            is_bk    = tk.endswith(".BK")
+            fx       = thb_usd if is_bk else 1.0
+            mkt_now  = curr * qty * fx
+            mkt_prev = prev * qty * fx
+            cost_usd = cost * qty * fx
+            pnl_pct     = (curr - cost) / cost * 100 if cost > 0 else 0.0
+            day_chg_pct = (curr - prev) / prev  * 100 if prev > 0 else 0.0
+            rows.append({
+                "ticker":       tk,
+                "price":        curr,
+                "day_chg_pct":  day_chg_pct,
+                "mkt_val":      mkt_now,
+                "cost_usd":     cost_usd,
+                "pnl_pct":      pnl_pct,
+            })
+            prices[tk]      = curr
+            port_series[tk] = h["Close"] * qty * fx
+            total_mkt  += mkt_now
+            total_cost += cost_usd
+            prev_mkt   += mkt_prev
+        except Exception:
+            continue
+
+    total_chg     = total_mkt - prev_mkt
+    total_chg_pct = total_chg / prev_mkt * 100 if prev_mkt > 0 else 0.0
+    total_pnl_pct = (total_mkt - total_cost) / total_cost * 100 if total_cost > 0 else 0.0
+
+    # ── VaR(95%) — 30-day portfolio history ───────────────────────────────
+    var95 = None
+    try:
+        if port_series:
+            combined = None
+            for _s in port_series.values():
+                combined = _s.copy() if combined is None else combined.add(_s, fill_value=0)
+            if combined is not None:
+                rets = combined.pct_change().dropna() * 100
+                if len(rets) >= 5:
+                    var95 = float(rets.quantile(0.05))
+    except Exception:
+        pass
+
+    return {
+        "rows": rows, "total_mkt": total_mkt, "total_cost": total_cost,
+        "total_chg": total_chg, "total_chg_pct": total_chg_pct,
+        "total_pnl_pct": total_pnl_pct, "prices": prices, "var95": var95,
+    }
+
+
 # ─── Section 6: Main App ─────────────────────────────────────────────────────
 
 def main():
@@ -480,13 +651,19 @@ def main():
     # ── initialize before tabs ──
     update_portfolio_btn = False
 
+    # ── Pre-load portfolio into session_state (available to ALL tabs) ─────
+    if "portfolio" not in st.session_state:
+        _saved = portfolio_load()
+        st.session_state.portfolio = _saved if _saved else []
+
     # ════════════════════════════════════
     # HEADER
     # ════════════════════════════════════
     st.title("📈 Investment Dashboard")
     st.caption(f"Last session: {datetime.now().strftime('%d %b %Y %H:%M')}")
 
-    tab_input, tab_chart, tab_adv = st.tabs([
+    tab_exec, tab_input, tab_chart, tab_adv = st.tabs([
+        "🏠  Summary",
         "✏️  กรอกพอร์ต",
         "📊  Chart & Analysis",
         "🚀  Advanced Analytics",
@@ -497,6 +674,191 @@ def main():
     tab_watch = None  # hidden below with if False:
 
 
+    # ════════════════════════════════════════════════════════════════════
+    # TAB EXEC — 🏠 Executive Summary
+    # ════════════════════════════════════════════════════════════════════
+    with tab_exec:
+        st.markdown("## 🏠 Executive Summary")
+
+        _port_items = st.session_state.get("portfolio", [])
+
+        # ── Refresh control ───────────────────────────────────────────
+        _ref_col, _ts_col = st.columns([1, 5])
+        with _ref_col:
+            _do_refresh = st.button("🔄 Refresh", key="exec_refresh",
+                                    help="อัพเดทราคาล่าสุด (cache 5 นาที)")
+        if _do_refresh:
+            _exec_snapshot.clear()
+
+        if not _port_items:
+            st.info("📋 ยังไม่มีข้อมูลพอร์ต — ไปที่แท็บ **✏️ กรอกพอร์ต** เพื่อเพิ่มหุ้น")
+        else:
+            # Build a hashable argument for cache (tuple of frozen tuples)
+            _cache_key = tuple(
+                (item["ticker"], float(item["qty"]), float(item["avg_cost"]))
+                for item in _port_items
+                if item.get("ticker") and float(item.get("qty", 0)) > 0
+            )
+            with st.spinner("⏳ กำลังดึงราคาพอร์ต …"):
+                _snap = _exec_snapshot(_cache_key)
+
+            # ── Top 4 Metric Cards ─────────────────────────────────────
+            _m1, _m2, _m3, _m4 = st.columns(4)
+            _chg_sym  = "▲" if _snap["total_chg_pct"] >= 0 else "▼"
+            _pnl_sym  = "▲" if _snap["total_pnl_pct"] >= 0 else "▼"
+            _var_label = f"{_snap['var95']:.2f}%" if _snap["var95"] is not None else "N/A"
+
+            with _m1:
+                st.metric(
+                    label="💼 Portfolio Value",
+                    value=f"${_snap['total_mkt']:,.0f}",
+                )
+            with _m2:
+                st.metric(
+                    label="📅 Today's Change",
+                    value=f"{_chg_sym} {abs(_snap['total_chg_pct']):.2f}%",
+                    delta=f"${_snap['total_chg']:+,.0f}",
+                    delta_color="normal",
+                )
+            with _m3:
+                st.metric(
+                    label="📈 Overall P&L",
+                    value=f"{_pnl_sym} {abs(_snap['total_pnl_pct']):.2f}%",
+                    delta=f"${_snap['total_mkt'] - _snap['total_cost']:+,.0f}",
+                    delta_color="normal",
+                )
+            with _m4:
+                _var_color = "normal"
+                st.metric(
+                    label="⚠️ VaR (95%, 1-day)",
+                    value=_var_label,
+                    help="Value-at-Risk: โอกาส 5% ที่พอร์ตจะขาดทุนเกินค่านี้ในวันเดียว",
+                )
+
+            st.divider()
+
+            # ── Action Items ────────────────────────────────────────────
+            _col_act, _col_snap = st.columns([1, 1.4])
+
+            with _col_act:
+                st.markdown("### 🎯 Action Items")
+
+                _active_alerts = alert_load_active()
+                _prices        = _snap.get("prices", {})
+                _rows_snap     = _snap.get("rows", [])
+
+                _has_action = False
+
+                # 1) Alerts near trigger (within 1.5%)
+                for _al in _active_alerts:
+                    _atk    = str(_al.get("ticker", "")).upper()
+                    _aprice = float(_al.get("price", 0))
+                    _acurr  = _prices.get(_atk)
+                    if _acurr and _aprice > 0:
+                        _dist = abs(_acurr - _aprice) / _aprice * 100
+                        if _dist <= 1.5:
+                            _dir = "🔴 ราคาต่ำกว่า" if _acurr < _aprice else "🟢 ราคาสูงกว่า"
+                            st.markdown(
+                                f'<div class="action-card action-warn">'
+                                f'<b>🔔 Alert ใกล้ trigger: {_atk}</b><br>'
+                                f'{_dir} target ${_aprice:,.2f} อยู่ {_dist:.1f}%'
+                                f'</div>', unsafe_allow_html=True
+                            )
+                            _has_action = True
+
+                # 2) Big movers (day change > ±3%)
+                for _r in _rows_snap:
+                    _d = _r["day_chg_pct"]
+                    if abs(_d) >= 3.0:
+                        _icon = "🚀" if _d > 0 else "📉"
+                        _cls  = "action-buy" if _d > 0 else "action-risk"
+                        st.markdown(
+                            f'<div class="action-card {_cls}">'
+                            f'{_icon} <b>{_r["ticker"]}</b> เคลื่อนไหว '
+                            f'<b>{_d:+.1f}%</b> วันนี้'
+                            f'</div>', unsafe_allow_html=True
+                        )
+                        _has_action = True
+
+                # 3) VaR warning
+                if _snap["var95"] is not None and _snap["var95"] < -2.5:
+                    st.markdown(
+                        f'<div class="action-card action-risk">'
+                        f'⚠️ <b>ความเสี่ยงสูง</b> — VaR(95%) = {_snap["var95"]:.2f}%<br>'
+                        f'พอร์ตมีโอกาส 5% ขาดทุนเกิน {abs(_snap["var95"]):.2f}% ต่อวัน'
+                        f'</div>', unsafe_allow_html=True
+                    )
+                    _has_action = True
+
+                if not _has_action:
+                    st.markdown(
+                        '<div class="action-card action-info">'
+                        '✅ ไม่มี Action ที่ต้องดำเนินการในขณะนี้'
+                        '</div>', unsafe_allow_html=True
+                    )
+
+            # ── Portfolio Snapshot Table ────────────────────────────────
+            with _col_snap:
+                st.markdown("### 📊 Portfolio Snapshot")
+                if _rows_snap:
+                    _df_snap = pd.DataFrame(_rows_snap)[
+                        ["ticker", "price", "day_chg_pct", "mkt_val", "pnl_pct"]
+                    ]
+                    _df_snap.columns = ["Ticker", "Price ($)", "Day %", "Mkt Value ($)", "P&L %"]
+                    _df_snap["Price ($)"]    = _df_snap["Price ($)"].map(lambda x: f"${x:,.2f}")
+                    _df_snap["Mkt Value ($)"] = _df_snap["Mkt Value ($)"].map(lambda x: f"${x:,.0f}")
+
+                    def _color_pnl(val):
+                        try:
+                            v = float(str(val).replace("%","").replace("+",""))
+                        except Exception:
+                            return ""
+                        if v > 0:
+                            return "color: #34d399; font-weight:700"
+                        elif v < 0:
+                            return "color: #f87171; font-weight:700"
+                        return ""
+
+                    _df_snap["Day %"]   = _df_snap["Day %"].map(lambda x: f"{x:+.2f}%")
+                    _df_snap["P&L %"]   = _df_snap["P&L %"].map(lambda x: f"{x:+.2f}%")
+
+                    _styled = _df_snap.style \
+                        .map(_color_pnl, subset=["Day %", "P&L %"])
+                    st.dataframe(_styled, use_container_width=True, hide_index=True)
+                else:
+                    st.info("ไม่มีข้อมูลราคา")
+
+            st.divider()
+
+            # ── Quick Night Diary ───────────────────────────────────────
+            st.markdown("### 📝 Quick Night Diary")
+            with st.form("exec_diary_form", clear_on_submit=True):
+                _diary_cols = st.columns([3, 1])
+                with _diary_cols[0]:
+                    _diary_note = st.text_area(
+                        "บันทึกความคิด / สิ่งที่สังเกตเห็นวันนี้",
+                        placeholder="เช่น TSLA ขึ้น 5% หลัง earnings — พิจารณา trim 10%  \nMacro: Fed minutes dovish, risk-on น่าจะต่อเนื่อง",
+                        height=100,
+                        label_visibility="collapsed",
+                    )
+                with _diary_cols[1]:
+                    _diary_mood = st.selectbox(
+                        "Mood", ["😐 Neutral", "🟢 Bullish", "🔴 Bearish", "⚠️ Cautious"],
+                        label_visibility="visible",
+                    )
+                _diary_submit = st.form_submit_button(
+                    "💾 บันทึก Diary", use_container_width=True, type="primary"
+                )
+                if _diary_submit and _diary_note.strip():
+                    try:
+                        _full_note = f"[{_diary_mood}] {_diary_note.strip()}"
+                        db_save(_full_note)
+                        st.success("✅ บันทึก Diary สำเร็จ!")
+                    except Exception as _e:
+                        st.error(f"❌ บันทึกไม่สำเร็จ: {_e}")
+                elif _diary_submit:
+                    st.warning("กรุณากรอกข้อความก่อนบันทึก")
+
     # ════════════════════════════════════
     # TAB 0 — Portfolio Input (Excel-style)
     # ════════════════════════════════════
@@ -504,11 +866,7 @@ def main():
         st.markdown("## ✏️ กรอกพอร์ตของฉัน")
         st.caption("พิมพ์ Ticker → กรอกจำนวนหุ้นและทุนเฉลี่ย → กด **💾 Save** เพื่อบันทึก")
 
-        # โหลดข้อมูลจาก Google Sheets ครั้งแรก
-        if "portfolio" not in st.session_state:
-            saved = portfolio_load()
-            st.session_state.portfolio = saved if saved else []
-
+        # portfolio already loaded above — just read from session_state
         port_data = st.session_state.portfolio
         if not port_data:
             port_data = [{"ticker": "", "qty": 0.0, "avg_cost": 0.0}]
@@ -726,10 +1084,29 @@ def main():
     # TAB 1 — Chart & Analysis
     # ════════════════════════════════════
     with tab_chart:
+        # ── Smart Ticker Selection: pull from portfolio ────────────────
+        _ptk_list = [
+            item["ticker"].upper().strip()
+            for item in st.session_state.get("portfolio", [])
+            if item.get("ticker") and float(item.get("qty", 0)) > 0
+        ]
+        if _ptk_list:
+            _ptk_options = ["(พิมพ์เอง)"] + _ptk_list
+            _ptk_sel = st.selectbox(
+                "📌 เลือกจากพอร์ต",
+                options=_ptk_options,
+                index=0,
+                help="เลือก Ticker จากพอร์ตของคุณ หรือเลือก '(พิมพ์เอง)' เพื่อกรอก Ticker เอง",
+            )
+            _default_ticker = "" if _ptk_sel == "(พิมพ์เอง)" else _ptk_sel
+        else:
+            _default_ticker = "TSLA"
+
         c1, c2, c3, c4 = st.columns([2.5, 1.2, 1.2, 1.2])
         with c1:
             ticker_input = st.text_input(
-                "🔍 Ticker Symbol", value="TSLA",
+                "🔍 Ticker Symbol",
+                value=_default_ticker if _default_ticker else "TSLA",
                 placeholder="TSLA / AAPL / BTC-USD"
             ).upper().strip()
         with c2:

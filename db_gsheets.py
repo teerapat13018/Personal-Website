@@ -73,10 +73,16 @@ def _get_client():
     return gspread.authorize(creds)
 
 
-def _get_ws(sheet_name: str):
-    """คืน Worksheet object (เปิดทุกครั้ง เพื่อไม่ให้ token หมดอายุ)"""
+@st.cache_resource
+def _get_spreadsheet():
+    """Cache spreadsheet object ตลอด session — ลด open_by_key calls"""
     client = _get_client()
-    return client.open_by_key(st.secrets["gsheets"]["spreadsheet_id"]).worksheet(sheet_name)
+    return client.open_by_key(st.secrets["gsheets"]["spreadsheet_id"])
+
+
+def _get_ws(sheet_name: str):
+    """คืน Worksheet object จาก cached spreadsheet"""
+    return _get_spreadsheet().worksheet(sheet_name)
 
 
 # ─── Utility ─────────────────────────────────────────────────────────────────
@@ -86,8 +92,9 @@ def _new_id() -> str:
     return str(uuid.uuid4())[:8]
 
 
+@st.cache_data(ttl=30)
 def _ws_to_df(sheet_name: str) -> pd.DataFrame:
-    """อ่าน worksheet ทั้งหมดแล้วคืนเป็น DataFrame (header = row 1)"""
+    """อ่าน worksheet ทั้งหมดแล้วคืนเป็น DataFrame — cached 30 วินาที เพื่อลด API quota"""
     ws = _get_ws(sheet_name)
     records = ws.get_all_records()            # list[dict]
     if not records:
@@ -108,6 +115,24 @@ def _find_row(ws, col_name: str, value, headers: list) -> int | None:
     return None
 
 
+@st.cache_resource
+def _ensure_sheets() -> tuple[bool, str]:
+    """
+    ตรวจสอบ/สร้าง sheets ครั้งเดียวต่อ session (@cache_resource) — ลด init overhead
+    คืน (ok, error_message)
+    """
+    try:
+        ss = _get_spreadsheet()
+        existing = [ws.title for ws in ss.worksheets()]
+        for sheet_name, headers in HEADERS.items():
+            if sheet_name not in existing:
+                ws = ss.add_worksheet(title=sheet_name, rows=1000, cols=len(headers))
+                ws.append_row(headers)
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
 def init_db():
     """
     ตรวจสอบว่า Spreadsheet มีทุก sheet ครบ ถ้าไม่มีให้สร้างพร้อม header
@@ -117,18 +142,10 @@ def init_db():
         st.error("กรุณาติดตั้ง: pip install gspread google-auth")
         st.stop()
 
-    client = _get_client()
-    try:
-        ss = client.open_by_key(st.secrets["gsheets"]["spreadsheet_id"])
-    except Exception as e:
-        st.error(f"เปิด Spreadsheet ไม่ได้: {e}")
+    ok, err = _ensure_sheets()
+    if not ok:
+        st.error(f"เปิด Spreadsheet ไม่ได้: {err}")
         st.stop()
-
-    existing = [ws.title for ws in ss.worksheets()]
-    for sheet_name, headers in HEADERS.items():
-        if sheet_name not in existing:
-            ws = ss.add_worksheet(title=sheet_name, rows=1000, cols=len(headers))
-            ws.append_row(headers)             # เขียน header row
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -146,6 +163,7 @@ def db_save(ticker, entry_date, entry_type, price_ref, note):
         note,
         datetime.now().strftime("%Y-%m-%d %H:%M"),
     ])
+    _ws_to_df.clear()
 
 
 def db_load(ticker_filter="") -> pd.DataFrame:
@@ -164,6 +182,7 @@ def db_delete_diary(entry_id):
     row_i = _find_row(ws, "id", entry_id, HEADERS[WS_DIARY])
     if row_i:
         ws.delete_rows(row_i)
+    _ws_to_df.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -182,6 +201,7 @@ def alert_add(ticker, alert_type, price, note=""):
         datetime.now().strftime("%Y-%m-%d %H:%M"),
         "",                                       # triggered_at
     ])
+    _ws_to_df.clear()
 
 
 def alert_load_active(ticker="") -> pd.DataFrame:
@@ -214,6 +234,7 @@ def alert_trigger(alert_id):
         triggered_col   = headers.index("triggered_at") + 1
         ws.update_cell(row_i, active_col, 0)
         ws.update_cell(row_i, triggered_col, datetime.now().strftime("%Y-%m-%d %H:%M"))
+    _ws_to_df.clear()
 
 
 def alert_delete(alert_id):
@@ -221,6 +242,7 @@ def alert_delete(alert_id):
     row_i = _find_row(ws, "id", alert_id, HEADERS[WS_ALERTS])
     if row_i:
         ws.delete_rows(row_i)
+    _ws_to_df.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -254,6 +276,7 @@ def portfolio_save(items: list):
             ])
     if rows:
         ws.append_rows(rows, value_input_option="USER_ENTERED")
+    _ws_to_df.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -271,6 +294,7 @@ def wl_add(ticker, note=""):
         note,
         datetime.now().strftime("%Y-%m-%d %H:%M"),
     ])
+    _ws_to_df.clear()
 
 
 def wl_load() -> pd.DataFrame:
@@ -285,6 +309,7 @@ def wl_delete(wl_id):
     row_i = _find_row(ws, "id", wl_id, HEADERS[WS_WATCHLIST])
     if row_i:
         ws.delete_rows(row_i)
+    _ws_to_df.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -301,6 +326,7 @@ def pt_add(ticker: str, support_price: float, usd_amount: float, shares: float):
         float(shares),
         datetime.now().strftime("%Y-%m-%d %H:%M"),
     ])
+    _ws_to_df.clear()
 
 
 def pt_load() -> pd.DataFrame:
@@ -317,6 +343,7 @@ def pt_clear():
     total_rows = len(ws.get_all_values())
     if total_rows > 1:
         ws.delete_rows(2, total_rows)
+    _ws_to_df.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -359,6 +386,7 @@ def etf_holdings_save(items: list):
             rows.append([etk, sym, pct])
     if rows:
         ws.append_rows(rows, value_input_option="USER_ENTERED")
+    _ws_to_df.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -399,6 +427,7 @@ def rebalancing_save(items: list):
             rows.append([tk, pct])
     if rows:
         ws.append_rows(rows, value_input_option="USER_ENTERED")
+    _ws_to_df.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
