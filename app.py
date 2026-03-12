@@ -865,24 +865,30 @@ def main():
                         return ""
 
                     def _color_support(val):
-                        """เขียว = อยู่เหนือ support / เหลือง = ใกล้ support (<2%) / แดง = หลุด support"""
+                        """ยิ่งใกล้ support ยิ่งเขียว — gradient by proximity"""
                         try:
                             dist = float(str(val).split("(")[1].replace("%","").replace(")","").replace("+",""))
                         except Exception:
                             return ""
-                        if dist >= -1.5:   return "color: #fbbf24; font-weight:700"  # ใกล้ (<1.5%)
-                        elif dist >= -5:   return "color: #34d399"                   # ปลอดภัย
-                        return "color: #94a3b8"                                       # ห่าง
+                        # dist < 0 (support อยู่ต่ำกว่า price); ใกล้ 0 = ใกล้ support = เขียวสด
+                        if dist >= -2:    return "color: #10b981; font-weight:700"  # ≤2%  — เขียวสดมาก
+                        elif dist >= -5:  return "color: #34d399; font-weight:600"  # 2-5% — เขียวสด
+                        elif dist >= -10: return "color: #6ee7b7"                   # 5-10% — เขียวอ่อน
+                        elif dist >= -20: return "color: #a7f3d0"                   # 10-20% — เขียวจาง
+                        return "color: #64748b"                                     # >20%  — เทา (ห่างมาก)
 
                     def _color_resistance(val):
-                        """แดง = ใกล้ resistance (<2%) / เขียว = ห่างออกไป"""
+                        """ยิ่งใกล้ resistance ยิ่งแดง — gradient by proximity"""
                         try:
                             dist = float(str(val).split("(")[1].replace("%","").replace(")","").replace("+",""))
                         except Exception:
                             return ""
-                        if dist <= 1.5:   return "color: #f87171; font-weight:700"   # ใกล้ (<1.5%)
-                        elif dist <= 5:   return "color: #fb923c"                    # ระวัง
-                        return "color: #94a3b8"                                       # ห่าง
+                        # dist > 0 (resistance อยู่สูงกว่า price); ใกล้ 0 = ใกล้ resistance = แดงสด
+                        if dist <= 2:    return "color: #ef4444; font-weight:700"   # ≤2%  — แดงสดมาก
+                        elif dist <= 5:  return "color: #f87171; font-weight:600"   # 2-5% — แดงสด
+                        elif dist <= 10: return "color: #fca5a5"                    # 5-10% — แดงอ่อน
+                        elif dist <= 20: return "color: #fed7aa"                    # 10-20% — ส้มจาง
+                        return "color: #64748b"                                     # >20%  — เทา (ห่างมาก)
 
                     _display = _df_snap[["Ticker","Price ($)","Day %","Support S1 ▼","Resistance R1 ▲","P&L %"]]
                     _styled = _display.style \
@@ -890,7 +896,7 @@ def main():
                         .map(_color_support,    subset=["Support S1 ▼"]) \
                         .map(_color_resistance, subset=["Resistance R1 ▲"])
                     st.dataframe(_styled, use_container_width=True, hide_index=True)
-                    st.caption("S1/R1 = Pivot Points จาก H/L/C วันก่อนหน้า  |  🟡 ใกล้ level (<1.5%)  🟠 ระวัง (<5%)")
+                    st.caption("S1/R1 = Pivot Points จาก H/L/C วันก่อนหน้า  |  🟢 ใกล้ Support มาก → เขียวสด  |  🔴 ใกล้ Resistance มาก → แดงสด  |  ⬜ ห่าง >20% → เทา")
                 else:
                     st.info("ไม่มีข้อมูลราคา")
 
@@ -937,8 +943,19 @@ def main():
         if not port_data:
             port_data = [{"ticker": "", "qty": 0.0, "avg_cost": 0.0}]
 
+        # โหลด Rebalancing Targets เพื่อรวมในตารางเดียวกัน
+        if "rebalancing" not in st.session_state:
+            _rb_raw_init = rebalancing_load()
+            st.session_state.rebalancing = [
+                {"Ticker": _tk, "Target %": _pct}
+                for _tk, _pct in _rb_raw_init.items()
+            ]
+        _rb_map = {r["Ticker"].upper(): r["Target %"] for r in st.session_state.rebalancing}
+
         df_port = pd.DataFrame(port_data)[["ticker", "qty", "avg_cost"]]
         df_port.columns = ["Ticker", "จำนวนหุ้น", "ทุนเฉลี่ย ($)"]
+        # เพิ่มคอลัมน์ Target % โดย map จาก rebalancing
+        df_port["Target %"] = df_port["Ticker"].str.upper().map(_rb_map).fillna(0.0)
 
         edited_df = st.data_editor(
             df_port,
@@ -954,6 +971,11 @@ def main():
                     "ทุนเฉลี่ย ($)", min_value=0.0, format="%.4f", width="medium",
                     help="หุ้นไทยใส่เป็นบาท เช่น 32.50"
                 ),
+                "Target %": st.column_config.NumberColumn(
+                    "Target % ⚖️", min_value=0.0, max_value=100.0,
+                    format="%.1f", width="small",
+                    help="สัดส่วนเป้าหมายของ Rebalancing (%) เช่น 20.0"
+                ),
             },
             num_rows="dynamic",
             use_container_width=True,
@@ -961,7 +983,17 @@ def main():
             key="portfolio_editor",
         )
 
-        st.caption("💡 คลิกแถวล่างสุดเพื่อเพิ่มหุ้นใหม่ — คลิกแถวแล้วกด Delete เพื่อลบ")
+        # แสดงผลรวม Target %
+        _target_col_vals = pd.to_numeric(edited_df.get("Target %", pd.Series(dtype=float)), errors="coerce").fillna(0)
+        _target_total = _target_col_vals.sum()
+        if _target_total > 0:
+            _tc_color = "green" if abs(_target_total - 100) < 0.5 else "orange"
+            st.caption(
+                f"⚖️ รวม Target %: :{_tc_color}[**{_target_total:.1f}%**]"
+                + (" ✅" if abs(_target_total - 100) < 0.5 else " ⚠️ ควรรวมเป็น 100%")
+            )
+        else:
+            st.caption("💡 คลิกแถวล่างสุดเพื่อเพิ่มหุ้นใหม่ — คลิกแถวแล้วกด Delete เพื่อลบ | กรอก Target % เพื่อใช้ Rebalancing")
 
         # ═══════════════════════════════════════════════════════════════
         # ETF Holdings — กรอก Holdings ของ ETF แต่ละตัว
@@ -1018,57 +1050,6 @@ def main():
         st.caption("💡 ETF 1 ตัวมีได้หลาย Symbol — กรอกแต่ละ row ด้วย ETF Ticker เดิม")
 
         # ═══════════════════════════════════════════════════════════════
-        # Rebalancing Targets — กรอก Target % ของพอร์ต
-        # ═══════════════════════════════════════════════════════════════
-        st.divider()
-        st.markdown("### ⚖️ Rebalancing Targets")
-        st.caption(
-            "กรอก Target % ของแต่ละ Ticker เพื่อให้ระบบคำนวณว่าต้องซื้อ/ขายเท่าไหร่  \n"
-            "• รวมทุก Target % ควรเท่ากับ **100%**"
-        )
-
-        if "rebalancing" not in st.session_state:
-            _rb_raw = rebalancing_load()
-            st.session_state.rebalancing = [
-                {"Ticker": _tk, "Target %": _pct}
-                for _tk, _pct in _rb_raw.items()
-            ]
-
-        _rb_data = st.session_state.rebalancing
-        if not _rb_data:
-            _rb_data = [{"Ticker": "", "Target %": 0.0}]
-
-        _df_rb_edit = pd.DataFrame(_rb_data)[["Ticker", "Target %"]]
-        _edited_rb = st.data_editor(
-            _df_rb_edit,
-            column_config={
-                "Ticker": st.column_config.TextColumn(
-                    "Ticker", width="medium",
-                    help="เช่น TSLA, AAPL, VTI"
-                ),
-                "Target %": st.column_config.NumberColumn(
-                    "Target %", min_value=0.0, max_value=100.0,
-                    format="%.1f", width="small",
-                    help="สัดส่วนเป้าหมาย (%) เช่น 20.0"
-                ),
-            },
-            num_rows="dynamic",
-            use_container_width=True,
-            hide_index=True,
-            key="rebalancing_editor",
-        )
-
-        _rb_total = pd.to_numeric(
-            _df_rb_edit["Target %"], errors="coerce").fillna(0).sum()
-        _has_rb_data = (_df_rb_edit["Ticker"].astype(str).str.strip() != "").any()
-        if _has_rb_data:
-            _tc = "green" if abs(_rb_total - 100) < 0.5 else "orange"
-            st.caption(
-                f"รวม Target %: :{_tc}[**{_rb_total:.1f}%**]"
-                + (" ✅" if abs(_rb_total - 100) < 0.5 else " ⚠️ ควรรวมเป็น 100%")
-            )
-
-        # ═══════════════════════════════════════════════════════════════
         # UNIFIED SAVE — บันทึกพอร์ต + ETF Holdings + Rebalancing ทีเดียว
         # ═══════════════════════════════════════════════════════════════
         st.divider()
@@ -1080,15 +1061,19 @@ def main():
             if st.button("💾 บันทึกทั้งหมด", use_container_width=True, type="primary"):
                 _save_errors = []
 
-                # 1) Save Portfolio
+                # 1) Save Portfolio + Rebalancing (อ่านจากตารางเดียวกัน)
+                _port_items = []
+                _rb_items   = []
                 try:
-                    _port_items = []
                     for _, _r in edited_df.iterrows():
-                        _tk = str(_r["Ticker"]).strip().upper()
-                        _q  = float(_r["จำนวนหุ้น"]) if pd.notna(_r["จำนวนหุ้น"]) else 0.0
-                        _c  = float(_r["ทุนเฉลี่ย ($)"]) if pd.notna(_r["ทุนเฉลี่ย ($)"]) else 0.0
+                        _tk  = str(_r["Ticker"]).strip().upper()
+                        _q   = float(_r["จำนวนหุ้น"]) if pd.notna(_r["จำนวนหุ้น"]) else 0.0
+                        _c   = float(_r["ทุนเฉลี่ย ($)"]) if pd.notna(_r["ทุนเฉลี่ย ($)"]) else 0.0
+                        _pct = float(_r["Target %"]) if pd.notna(_r.get("Target %")) else 0.0
                         if _tk and _q > 0 and _c > 0:
                             _port_items.append({"ticker": _tk, "qty": _q, "avg_cost": _c})
+                        if _tk and _pct > 0:
+                            _rb_items.append({"ticker": _tk, "target_pct": _pct})
                     portfolio_save(_port_items)
                     st.session_state.portfolio = _port_items
                 except Exception as _e:
@@ -1117,14 +1102,8 @@ def main():
                 except Exception as _e:
                     _save_errors.append(f"ETF Holdings: {_e}")
 
-                # 3) Save Rebalancing
+                # 3) Save Rebalancing (ใช้ _rb_items ที่สร้างจาก Portfolio loop ด้านบน)
                 try:
-                    _rb_items = []
-                    for _, _r in _edited_rb.iterrows():
-                        _tk2  = str(_r["Ticker"]).strip().upper()
-                        _pct3 = float(_r["Target %"]) if pd.notna(_r["Target %"]) else 0.0
-                        if _tk2 and _pct3 > 0:
-                            _rb_items.append({"ticker": _tk2, "target_pct": _pct3})
                     rebalancing_save(_rb_items)
                     st.session_state.rebalancing = [
                         {"Ticker": i["ticker"], "Target %": i["target_pct"]}
@@ -2518,8 +2497,8 @@ def main():
                 with adv_t3:
                     st.markdown("### ⚖️ Rebalancing Summary")
                     st.caption(
-                        "กรอก **Target %** ในแท็บ ✏️ กรอกพอร์ต → ส่วน Rebalancing Targets "
-                        "→ กด **Save Rebalancing** → กด **Run Analysis** เพื่อโหลดผล"
+                        "กรอก **Target %** ในคอลัมน์ **Target % ⚖️** ของตารางพอร์ต (แท็บ ✏️ กรอกพอร์ต) "
+                        "→ กด **💾 บันทึกทั้งหมด** → กด **Run Analysis** เพื่อโหลดผล"
                     )
 
                     cur_prices      = D["cur_prices"]
@@ -2547,9 +2526,9 @@ def main():
                         st.warning(
                             "📋 **ยังไม่มีข้อมูล Target %**\n\n"
                             "**วิธีกรอก:**\n"
-                            "1. ไปที่แท็บ ✏️ **กรอกพอร์ต** → ส่วน **⚖️ Rebalancing Targets**\n"
-                            "2. กรอก Ticker และ Target % ให้รวม = **100%**\n"
-                            "3. กด **💾 Save Rebalancing** → กลับมากด **Run Analysis** อีกครั้ง"
+                            "1. ไปที่แท็บ ✏️ **กรอกพอร์ต** → คอลัมน์ **Target % ⚖️** ในตารางหลัก\n"
+                            "2. กรอก Target % ของแต่ละหุ้นให้รวม = **100%**\n"
+                            "3. กด **💾 บันทึกทั้งหมด** → กลับมากด **Run Analysis** อีกครั้ง"
                         )
                         # แสดงตาราง current allocation เป็น reference
                         st.markdown("##### 📊 Current Allocation (อ้างอิง)")
