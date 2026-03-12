@@ -911,27 +911,70 @@ def main():
             # ── Quick Night Diary ───────────────────────────────────────
             st.markdown("### 📝 Quick Night Diary")
             with st.form("exec_diary_form", clear_on_submit=True):
-                _diary_cols = st.columns([3, 1])
-                with _diary_cols[0]:
-                    _diary_note = st.text_area(
-                        "บันทึกความคิด / สิ่งที่สังเกตเห็นวันนี้",
-                        placeholder="เช่น TSLA ขึ้น 5% หลัง earnings — พิจารณา trim 10%  \nMacro: Fed minutes dovish, risk-on น่าจะต่อเนื่อง",
-                        height=100,
-                        label_visibility="collapsed",
+                # Row 1: Ticker | Date | Mood
+                _d_r1 = st.columns([2, 2, 2])
+                with _d_r1[0]:
+                    _port_tickers = [
+                        i["ticker"].upper() for i in st.session_state.get("portfolio", [])
+                        if i.get("ticker") and float(i.get("qty", 0)) > 0
+                    ]
+                    _ticker_opts = ["(ไม่ระบุ)"] + _port_tickers
+                    _diary_ticker_sel = st.selectbox(
+                        "Ticker", _ticker_opts,
+                        help="เลือกหุ้นที่จะบันทึก หรือเลือก '(ไม่ระบุ)' สำหรับ macro note"
                     )
-                with _diary_cols[1]:
-                    _diary_mood = st.selectbox(
-                        "Mood", ["😐 Neutral", "🟢 Bullish", "🔴 Bearish", "⚠️ Cautious"],
+                    _diary_ticker_manual = st.text_input(
+                        "หรือพิมพ์ Ticker เอง", placeholder="เช่น TSLA",
                         label_visibility="visible",
                     )
+                with _d_r1[1]:
+                    _diary_date = st.date_input(
+                        "วันที่", value=datetime.now().date(),
+                        help="วันที่บันทึก (default = วันนี้)"
+                    )
+                with _d_r1[2]:
+                    _diary_mood = st.selectbox(
+                        "Mood", ["😐 Neutral", "🟢 Bullish", "🔴 Bearish", "⚠️ Cautious"],
+                    )
+
+                # Row 2: Note
+                _diary_note = st.text_area(
+                    "บันทึก",
+                    placeholder="เช่น TSLA ขึ้น 5% หลัง earnings — พิจารณา trim 10%\nMacro: Fed minutes dovish, risk-on น่าจะต่อเนื่อง",
+                    height=90,
+                    label_visibility="collapsed",
+                )
+
                 _diary_submit = st.form_submit_button(
                     "💾 บันทึก Diary", use_container_width=True, type="primary"
                 )
+
                 if _diary_submit and _diary_note.strip():
                     try:
+                        # ── resolve ticker ──────────────────────────────
+                        _dtk = _diary_ticker_manual.strip().upper() or (
+                            "" if _diary_ticker_sel == "(ไม่ระบุ)" else _diary_ticker_sel
+                        )
+                        # ── ดึงราคาปัจจุบัน ─────────────────────────────
+                        _dprice = None
+                        if _dtk:
+                            try:
+                                _dh = yf.Ticker(_dtk).history(period="2d")
+                                if not _dh.empty:
+                                    _dprice = round(float(_dh["Close"].iloc[-1]), 4)
+                            except Exception:
+                                pass
+                        # ── save ────────────────────────────────────────
                         _full_note = f"[{_diary_mood}] {_diary_note.strip()}"
-                        db_save(_full_note)
-                        st.success("✅ บันทึก Diary สำเร็จ!")
+                        db_save(
+                            _dtk or "—",
+                            str(_diary_date),
+                            "note",
+                            _dprice,
+                            _full_note,
+                        )
+                        _price_str = f" @ ${_dprice:,.4f}" if _dprice else ""
+                        st.success(f"✅ บันทึกสำเร็จ!{f'  {_dtk}{_price_str}' if _dtk else ''}")
                     except Exception as _e:
                         st.error(f"❌ บันทึกไม่สำเร็จ: {_e}")
                 elif _diary_submit:
