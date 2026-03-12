@@ -530,6 +530,31 @@ def adv_compute_correlation(df_prices: pd.DataFrame):
     return returns.corr()
 
 
+def _corr_cluster_order(corr_df: pd.DataFrame) -> list:
+    """
+    Return ticker order sorted by hierarchical clustering (average linkage).
+    Stocks that move together end up adjacent in the matrix.
+    Falls back to original order if scipy unavailable or < 3 assets.
+    """
+    tickers = corr_df.columns.tolist()
+    if len(tickers) < 3:
+        return tickers
+    try:
+        from scipy.cluster.hierarchy import linkage, leaves_list
+        from scipy.spatial.distance import squareform
+        # Convert correlation → distance (0 = identical, 2 = opposite)
+        dist = 1 - corr_df.values
+        # Clip rounding errors to valid distance range
+        dist = dist.clip(0, 2)
+        # squareform expects condensed distance matrix (upper triangle)
+        condensed = squareform(dist, checks=False)
+        Z = linkage(condensed, method="average")
+        order = leaves_list(Z)
+        return [tickers[i] for i in order]
+    except Exception:
+        return tickers
+
+
 # ── 5D: Drawdown Analysis ────────────────────────────────────────────────────
 
 def adv_compute_drawdown(port_value: pd.Series):
@@ -2578,6 +2603,10 @@ def main():
                         st.info(
                             "เลือกหุ้นอย่างน้อย **2 ตัว** เพื่อแสดง Correlation Matrix")
                     else:
+                        # ── Reorder by hierarchical clustering ───────────
+                        _ordered = _corr_cluster_order(corr_df)
+                        corr_df  = corr_df.loc[_ordered, _ordered]
+
                         n_assets = len(corr_df)
                         fig_corr = go.Figure(go.Heatmap(
                             z=corr_df.values,
@@ -2594,7 +2623,7 @@ def main():
                                 "Correlation: %{z:.3f}<extra></extra>"),
                         ))
                         fig_corr.update_layout(
-                            title=f"Correlation Matrix (Daily Returns) — {n_assets} หุ้น",
+                            title=f"Correlation Matrix — เรียงตาม Cluster ({n_assets} หุ้น)",
                             template="plotly_dark",
                             height=max(350, n_assets * 65 + 100),
                             paper_bgcolor="#0e1117",
