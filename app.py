@@ -650,20 +650,43 @@ def _exec_snapshot(portfolio_items: tuple) -> dict:
 
 @st.cache_data(ttl=300)
 def _fetch_portfolio_news(tickers_tuple: tuple) -> list:
-    """Fetch recent news for all portfolio tickers — cached 5 min"""
+    """Fetch recent news for all portfolio tickers — cached 5 min
+    Handles both yfinance old format (flat dict) and new format (nested content dict)
+    """
     from datetime import datetime, timezone
     all_news = []
     for tk in tickers_tuple:
         try:
             items = yf.Ticker(tk).news or []
             for item in items[:4]:  # max 4 per ticker
-                all_news.append({
-                    "ticker":    tk,
-                    "title":     item.get("title", ""),
-                    "publisher": item.get("publisher", ""),
-                    "link":      item.get("link", "#"),
-                    "ts":        int(item.get("providerPublishTime", 0)),
-                })
+                # ── yfinance >= 0.2.x: nested under "content" key ──────────
+                if "content" in item and isinstance(item["content"], dict):
+                    c    = item["content"]
+                    title = c.get("title", "")
+                    pub   = (c.get("provider") or {}).get("displayName", "")
+                    link  = (c.get("canonicalUrl") or {}).get("url", "#") or "#"
+                    # pubDate is ISO string e.g. "2025-03-10T14:32:00Z"
+                    pub_date = c.get("pubDate", "") or c.get("displayDate", "")
+                    try:
+                        ts = int(datetime.fromisoformat(
+                            pub_date.replace("Z", "+00:00")).timestamp()) if pub_date else 0
+                    except Exception:
+                        ts = 0
+                # ── yfinance < 0.2.x: flat dict ────────────────────────────
+                else:
+                    title = item.get("title", "")
+                    pub   = item.get("publisher", "")
+                    link  = item.get("link", "#") or "#"
+                    ts    = int(item.get("providerPublishTime", 0))
+
+                if title:  # skip empty-title items
+                    all_news.append({
+                        "ticker":    tk,
+                        "title":     title,
+                        "publisher": pub,
+                        "link":      link,
+                        "ts":        ts,
+                    })
         except Exception:
             pass
     all_news.sort(key=lambda x: x["ts"], reverse=True)
