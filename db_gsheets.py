@@ -81,8 +81,18 @@ def _get_spreadsheet():
 
 
 def _get_ws(sheet_name: str):
-    """คืน Worksheet object จาก cached spreadsheet"""
-    return _get_spreadsheet().worksheet(sheet_name)
+    """คืน Worksheet object — ถ้าไม่เจอให้สร้างใหม่อัตโนมัติ"""
+    ss = _get_spreadsheet()
+    try:
+        return ss.worksheet(sheet_name)
+    except Exception as _e:
+        if "worksheetnotfound" in type(_e).__name__.lower() or "not found" in str(_e).lower():
+            headers = HEADERS.get(sheet_name, [])
+            ws = ss.add_worksheet(title=sheet_name, rows=1000, cols=max(len(headers), 1))
+            if headers:
+                ws.append_row(headers)
+            return ws
+        raise
 
 
 # ─── Utility ─────────────────────────────────────────────────────────────────
@@ -115,10 +125,10 @@ def _find_row(ws, col_name: str, value, headers: list) -> int | None:
     return None
 
 
-@st.cache_resource
 def _ensure_sheets() -> tuple[bool, str]:
     """
-    ตรวจสอบ/สร้าง sheets ครั้งเดียวต่อ session (@cache_resource) — ลด init overhead
+    ตรวจสอบ/สร้าง sheets ทุกครั้งที่ init_db() ถูกเรียก
+    (ไม่ใช้ @cache_resource เพื่อป้องกัน cache ผลล้มเหลว)
     คืน (ok, error_message)
     """
     try:
@@ -130,7 +140,7 @@ def _ensure_sheets() -> tuple[bool, str]:
                     ws = ss.add_worksheet(title=sheet_name, rows=1000, cols=len(headers))
                     ws.append_row(headers)
                 except Exception as _inner:
-                    # sheet ถูกสร้างไปแล้ว (race condition หรือ retry) — ไม่ใช่ error จริง
+                    # sheet ถูกสร้างไปแล้ว (race condition) — ไม่ใช่ error จริง
                     if "already exists" in str(_inner).lower():
                         pass
                     else:
