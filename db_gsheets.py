@@ -87,9 +87,12 @@ def _get_ws(sheet_name: str):
     หากยังไม่มีให้สร้างใหม่พร้อม header
     """
     ss = _get_spreadsheet()
-    # ดึง worksheet list สด ๆ จาก API (ไม่ใช้ internal cache ของ ss)
-    for ws in ss.worksheets():
-        if ws.title == sheet_name:
+    # ดึง worksheet list สด ๆ จาก API
+    # เปรียบเทียบแบบ case-insensitive เพราะ Google Sheets อาจสร้าง "Portfolio" ไปแล้ว
+    # แต่ code ของเราหา "portfolio" (ตัวเล็ก) ทำให้หาไม่เจอ
+    all_ws = ss.worksheets()
+    for ws in all_ws:
+        if ws.title.lower() == sheet_name.lower():
             return ws
     # ไม่เจอ → สร้างใหม่
     headers = HEADERS.get(sheet_name, [])
@@ -100,9 +103,9 @@ def _get_ws(sheet_name: str):
         return ws
     except Exception as _e:
         if "already exists" in str(_e).lower():
-            # race condition — ดึง fresh list อีกรอบ
+            # race condition — ดึง fresh list อีกรอบ (case-insensitive)
             for ws in ss.worksheets():
-                if ws.title == sheet_name:
+                if ws.title.lower() == sheet_name.lower():
                     return ws
         raise
 
