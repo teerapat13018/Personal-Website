@@ -865,30 +865,28 @@ def main():
                         return ""
 
                     def _color_support(val):
-                        """ยิ่งใกล้ support ยิ่งเขียว — gradient by proximity"""
+                        """ยิ่งใกล้ support ยิ่งเขียว → ส้ม → เหลือง → แดง"""
                         try:
                             dist = float(str(val).split("(")[1].replace("%","").replace(")","").replace("+",""))
                         except Exception:
                             return ""
-                        # dist < 0 (support อยู่ต่ำกว่า price); ใกล้ 0 = ใกล้ support = เขียวสด
-                        if dist >= -2:    return "color: #10b981; font-weight:700"  # ≤2%  — เขียวสดมาก
-                        elif dist >= -5:  return "color: #34d399; font-weight:600"  # 2-5% — เขียวสด
-                        elif dist >= -10: return "color: #6ee7b7"                   # 5-10% — เขียวอ่อน
-                        elif dist >= -20: return "color: #a7f3d0"                   # 10-20% — เขียวจาง
-                        return "color: #64748b"                                     # >20%  — เทา (ห่างมาก)
+                        # dist < 0; ใกล้ 0 = ใกล้ support = เขียว, ห่าง = แดง
+                        if dist >= -3:    return "color: #10b981; font-weight:700"  # ≤3%  — เขียว
+                        elif dist >= -7:  return "color: #f97316; font-weight:600"  # 3-7% — ส้ม
+                        elif dist >= -15: return "color: #facc15"                   # 7-15% — เหลือง
+                        return "color: #ef4444"                                     # >15% — แดง
 
                     def _color_resistance(val):
-                        """ยิ่งใกล้ resistance ยิ่งแดง — gradient by proximity"""
+                        """ยิ่งใกล้ resistance ยิ่งแดง → เหลือง → ส้ม → เขียว"""
                         try:
                             dist = float(str(val).split("(")[1].replace("%","").replace(")","").replace("+",""))
                         except Exception:
                             return ""
-                        # dist > 0 (resistance อยู่สูงกว่า price); ใกล้ 0 = ใกล้ resistance = แดงสด
-                        if dist <= 2:    return "color: #ef4444; font-weight:700"   # ≤2%  — แดงสดมาก
-                        elif dist <= 5:  return "color: #f87171; font-weight:600"   # 2-5% — แดงสด
-                        elif dist <= 10: return "color: #fca5a5"                    # 5-10% — แดงอ่อน
-                        elif dist <= 20: return "color: #fed7aa"                    # 10-20% — ส้มจาง
-                        return "color: #64748b"                                     # >20%  — เทา (ห่างมาก)
+                        # dist > 0; ใกล้ 0 = ใกล้ resistance = แดง, ห่าง = เขียว
+                        if dist <= 3:    return "color: #ef4444; font-weight:700"   # ≤3%  — แดง
+                        elif dist <= 7:  return "color: #facc15; font-weight:600"   # 3-7% — เหลือง
+                        elif dist <= 15: return "color: #f97316"                    # 7-15% — ส้ม
+                        return "color: #10b981"                                     # >15% — เขียว
 
                     _display = _df_snap[["Ticker","Price ($)","Day %","Support S1 ▼","Resistance R1 ▲","P&L %"]]
                     _styled = _display.style \
@@ -896,7 +894,7 @@ def main():
                         .map(_color_support,    subset=["Support S1 ▼"]) \
                         .map(_color_resistance, subset=["Resistance R1 ▲"])
                     st.dataframe(_styled, use_container_width=True, hide_index=True)
-                    st.caption("S1/R1 = Pivot Points จาก H/L/C วันก่อนหน้า  |  🟢 ใกล้ Support มาก → เขียวสด  |  🔴 ใกล้ Resistance มาก → แดงสด  |  ⬜ ห่าง >20% → เทา")
+                    st.caption("S1/R1 = Pivot Points จาก H/L/C วันก่อนหน้า  |  Support: 🟢 ≤3% · 🟠 ≤7% · 🟡 ≤15% · 🔴 >15%  |  Resistance: 🔴 ≤3% · 🟡 ≤7% · 🟠 ≤15% · 🟢 >15%")
                 else:
                     st.info("ไม่มีข้อมูลราคา")
 
