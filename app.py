@@ -750,7 +750,7 @@ def main():
                 _has_action = False
 
                 # 1) Alerts near trigger (within 1.5%)
-                for _al in _active_alerts:
+                for _al in _active_alerts.to_dict("records"):
                     _atk    = str(_al.get("ticker", "")).upper()
                     _aprice = float(_al.get("price", 0))
                     _acurr  = _prices.get(_atk)
