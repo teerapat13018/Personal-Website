@@ -191,7 +191,7 @@ from db_gsheets import (
 
 # ─── Section 3: Support & Resistance (Local Extrema) ────────────────────────
 
-def find_support_resistance(df: pd.DataFrame, order: int = 5):
+def find_support_resistance(df: pd.DataFrame, order: int = 10):
     highs = df["High"].values
     lows  = df["Low"].values
     n     = len(highs)
@@ -581,7 +581,7 @@ def _exec_snapshot(portfolio_items: tuple) -> dict:
         if not tk or qty <= 0:
             continue
         try:
-            h = yf.Ticker(tk).history(period="6mo")
+            h = yf.Ticker(tk).history(period="1y")
             if h.empty:
                 continue
             curr = float(h["Close"].iloc[-1])
@@ -597,7 +597,7 @@ def _exec_snapshot(portfolio_items: tuple) -> dict:
             # ── Local Extrema S/R — เหมือน Chart Analysis ─────────────────
             support = resistance = None
             try:
-                _sups, _ress = find_support_resistance(h, order=5)
+                _sups, _ress = find_support_resistance(h, order=10)
                 support    = _sups[-1] if _sups else None   # แนวรับที่ใกล้ที่สุด (สูงสุดใต้ราคา)
                 resistance = _ress[0]  if _ress else None   # แนวต้านที่ใกล้ที่สุด (ต่ำสุดเหนือราคา)
             except Exception:
@@ -1155,7 +1155,7 @@ def main():
             interval = st.selectbox("Interval",
                 ["1d","1wk","1mo"], index=0)
         with c4:
-            sr_order = st.slider("S/R Sensitivity", 2, 20, 5,
+            sr_order = st.slider("S/R Sensitivity", 2, 20, 10,
                 help="ค่าสูง = Major level เท่านั้น")
 
         fetch_btn = st.button(
