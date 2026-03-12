@@ -2535,11 +2535,48 @@ def main():
                     st.markdown("---")
                     st.markdown("#### 🔄 Correlation Matrix (Daily Returns)")
 
-                    corr_df = adv_compute_correlation(df_px)
+                    _all_tickers = list(df_px.columns)
+
+                    # ── Toggle: เลือก/ซ่อนหุ้นแต่ละตัว ─────────────────
+                    _corr_sel_key = "corr_selected_tickers"
+                    if _corr_sel_key not in st.session_state:
+                        st.session_state[_corr_sel_key] = set(_all_tickers)
+
+                    # ── ปุ่ม Select All / Deselect All ───────────────────
+                    _cb1, _cb2, _cb3 = st.columns([1, 1, 6])
+                    with _cb1:
+                        if st.button("✅ ทั้งหมด", key="corr_sel_all",
+                                     use_container_width=True):
+                            st.session_state[_corr_sel_key] = set(_all_tickers)
+                            st.rerun()
+                    with _cb2:
+                        if st.button("⬜ ล้าง", key="corr_desel_all",
+                                     use_container_width=True):
+                            st.session_state[_corr_sel_key] = set()
+                            st.rerun()
+
+                    # ── Checkbox grid (8 per row) ────────────────────────
+                    _n_cols = min(len(_all_tickers), 8)
+                    _tick_cols = st.columns(_n_cols)
+                    for _ti, _tk in enumerate(_all_tickers):
+                        with _tick_cols[_ti % _n_cols]:
+                            _checked = _tk in st.session_state[_corr_sel_key]
+                            if st.checkbox(_tk, value=_checked,
+                                           key=f"corr_cb_{_tk}"):
+                                st.session_state[_corr_sel_key].add(_tk)
+                            else:
+                                st.session_state[_corr_sel_key].discard(_tk)
+
+                    # ── กรอง df_px ตาม selection ─────────────────────────
+                    _sel_tickers = [t for t in _all_tickers
+                                    if t in st.session_state[_corr_sel_key]]
+                    _df_px_filtered = df_px[_sel_tickers] if _sel_tickers else df_px[[]]
+
+                    corr_df = adv_compute_correlation(_df_px_filtered)
 
                     if corr_df is None:
                         st.info(
-                            "ต้องมีหุ้นอย่างน้อย **2 ตัว** ในพอร์ตเพื่อคำนวณ Correlation")
+                            "เลือกหุ้นอย่างน้อย **2 ตัว** เพื่อแสดง Correlation Matrix")
                     else:
                         n_assets = len(corr_df)
                         fig_corr = go.Figure(go.Heatmap(
@@ -2557,7 +2594,7 @@ def main():
                                 "Correlation: %{z:.3f}<extra></extra>"),
                         ))
                         fig_corr.update_layout(
-                            title="Correlation Matrix (Daily Returns)",
+                            title=f"Correlation Matrix (Daily Returns) — {n_assets} หุ้น",
                             template="plotly_dark",
                             height=max(350, n_assets * 65 + 100),
                             paper_bgcolor="#0e1117",
