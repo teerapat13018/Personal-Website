@@ -81,27 +81,29 @@ def _get_spreadsheet():
 
 
 def _get_ws(sheet_name: str):
-    """คืน Worksheet object — ถ้าไม่เจอให้สร้างใหม่อัตโนมัติ"""
+    """
+    คืน Worksheet object — ใช้ ss.worksheets() (fresh API call) เสมอ
+    เพราะ ss เป็น @cache_resource และ internal list อาจ stale
+    หากยังไม่มีให้สร้างใหม่พร้อม header
+    """
     ss = _get_spreadsheet()
+    # ดึง worksheet list สด ๆ จาก API (ไม่ใช้ internal cache ของ ss)
+    for ws in ss.worksheets():
+        if ws.title == sheet_name:
+            return ws
+    # ไม่เจอ → สร้างใหม่
+    headers = HEADERS.get(sheet_name, [])
     try:
-        return ss.worksheet(sheet_name)
+        ws = ss.add_worksheet(title=sheet_name, rows=1000, cols=max(len(headers), 1))
+        if headers:
+            ws.append_row(headers)
+        return ws
     except Exception as _e:
-        if "worksheetnotfound" in type(_e).__name__.lower() or "not found" in str(_e).lower():
-            headers = HEADERS.get(sheet_name, [])
-            try:
-                ws = ss.add_worksheet(title=sheet_name, rows=1000, cols=max(len(headers), 1))
-                if headers:
-                    ws.append_row(headers)
-                return ws
-            except Exception as _e2:
-                # sheet ถูกสร้างไปแล้วโดย _ensure_sheets() หรือ thread อื่น
-                # ss object อาจ cache worksheet list เก่าอยู่ → ใช้ ss.worksheets()
-                # ซึ่ง call API ใหม่เสมอ แทนที่จะใช้ ss.worksheet() ที่อาจ stale
-                if "already exists" in str(_e2).lower():
-                    for ws_obj in ss.worksheets():
-                        if ws_obj.title == sheet_name:
-                            return ws_obj
-                raise
+        if "already exists" in str(_e).lower():
+            # race condition — ดึง fresh list อีกรอบ
+            for ws in ss.worksheets():
+                if ws.title == sheet_name:
+                    return ws
         raise
 
 
