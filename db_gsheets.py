@@ -94,9 +94,13 @@ def _get_ws(sheet_name: str):
                     ws.append_row(headers)
                 return ws
             except Exception as _e2:
-                # sheet ถูกสร้างไปแล้วโดย _ensure_sheets() หรือ thread อื่น — ดึงตรงๆ แทน
+                # sheet ถูกสร้างไปแล้วโดย _ensure_sheets() หรือ thread อื่น
+                # ss object อาจ cache worksheet list เก่าอยู่ → ใช้ ss.worksheets()
+                # ซึ่ง call API ใหม่เสมอ แทนที่จะใช้ ss.worksheet() ที่อาจ stale
                 if "already exists" in str(_e2).lower():
-                    return ss.worksheet(sheet_name)
+                    for ws_obj in ss.worksheets():
+                        if ws_obj.title == sheet_name:
+                            return ws_obj
                 raise
         raise
 
