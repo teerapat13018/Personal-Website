@@ -973,39 +973,41 @@ def main():
                             st.session_state["chart_jump_trigger"]  = True
                             st.rerun()
 
-            # ── Portfolio News Feed ─────────────────────────────────────
-            st.divider()
-            st.markdown("### 📰 ข่าวหุ้นในพอร์ต")
-            _news_tickers = tuple(
-                item["ticker"].upper()
-                for item in st.session_state.get("portfolio", [])
-                if item.get("ticker") and float(item.get("qty", 0)) > 0
-            )
-            if _news_tickers:
-                with st.spinner("⏳ กำลังโหลดข่าว …"):
-                    _news_items = _fetch_portfolio_news(_news_tickers)
-                if _news_items:
-                    for _ni in _news_items:
-                        _tl = _news_time_label(_ni["ts"])
-                        st.markdown(
-                            f'<div style="padding:10px 14px;margin-bottom:8px;'
-                            f'border-left:3px solid #3b82f6;'
-                            f'background:rgba(59,130,246,0.06);border-radius:6px;">'
-                            f'<span style="background:#1d4ed8;color:#fff;font-size:11px;'
-                            f'padding:2px 7px;border-radius:4px;font-weight:700;'
-                            f'margin-right:8px;">{_ni["ticker"]}</span>'
-                            f'<a href="{_ni["link"]}" target="_blank" '
-                            f'style="color:#e2e8f0;text-decoration:none;font-size:14px;'
-                            f'font-weight:500;">{_ni["title"]}</a><br>'
-                            f'<span style="color:#64748b;font-size:11px;">'
-                            f'{_ni["publisher"]}  ·  {_tl}</span>'
-                            f'</div>',
-                            unsafe_allow_html=True
-                        )
+            # ── Portfolio News Feed — HIDDEN ────────────────────────────
+            # (re-enable by removing the `if False:` wrapper)
+            if False:
+                st.divider()
+                st.markdown("### 📰 ข่าวหุ้นในพอร์ต")
+                _news_tickers = tuple(
+                    item["ticker"].upper()
+                    for item in st.session_state.get("portfolio", [])
+                    if item.get("ticker") and float(item.get("qty", 0)) > 0
+                )
+                if _news_tickers:
+                    with st.spinner("⏳ กำลังโหลดข่าว …"):
+                        _news_items = _fetch_portfolio_news(_news_tickers)
+                    if _news_items:
+                        for _ni in _news_items:
+                            _tl = _news_time_label(_ni["ts"])
+                            st.markdown(
+                                f'<div style="padding:10px 14px;margin-bottom:8px;'
+                                f'border-left:3px solid #3b82f6;'
+                                f'background:rgba(59,130,246,0.06);border-radius:6px;">'
+                                f'<span style="background:#1d4ed8;color:#fff;font-size:11px;'
+                                f'padding:2px 7px;border-radius:4px;font-weight:700;'
+                                f'margin-right:8px;">{_ni["ticker"]}</span>'
+                                f'<a href="{_ni["link"]}" target="_blank" '
+                                f'style="color:#e2e8f0;text-decoration:none;font-size:14px;'
+                                f'font-weight:500;">{_ni["title"]}</a><br>'
+                                f'<span style="color:#64748b;font-size:11px;">'
+                                f'{_ni["publisher"]}  ·  {_tl}</span>'
+                                f'</div>',
+                                unsafe_allow_html=True
+                            )
+                    else:
+                        st.info("ไม่พบข่าวในขณะนี้")
                 else:
-                    st.info("ไม่พบข่าวในขณะนี้")
-            else:
-                st.info("เพิ่มหุ้นในพอร์ตเพื่อดูข่าว")
+                    st.info("เพิ่มหุ้นในพอร์ตเพื่อดูข่าว")
 
             # ── Quick Night Diary ───────────────────────────────────────
             st.markdown("### 📝 Quick Night Diary")
