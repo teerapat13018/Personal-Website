@@ -180,7 +180,6 @@ st.markdown("""
 from db_gsheets import (
     init_db,
     db_save, db_load, db_delete_diary,
-    alert_add, alert_load_active, alert_load_all, alert_trigger, alert_delete,
     portfolio_load, portfolio_save,
     wl_add, wl_load, wl_delete,
     pt_add, pt_load, pt_clear,
@@ -239,7 +238,7 @@ BULL = "#26a69a"
 BEAR = "#ef5350"
 
 
-def build_candlestick(df, ticker, supports, resistances, alerts_df=None):
+def build_candlestick(df, ticker, supports, resistances):
     fig = make_subplots(
         rows=2, cols=1, shared_xaxes=True,
         vertical_spacing=0.04, row_heights=[0.72, 0.28],
@@ -273,17 +272,6 @@ def build_candlestick(df, ticker, supports, resistances, alerts_df=None):
         fig.add_annotation(x=df.index[-1], y=lv, text=f" R {lv:,.2f}",
                            showarrow=False, xanchor="left",
                            font=dict(color=BEAR, size=10), row=1, col=1)
-
-    if alerts_df is not None and not alerts_df.empty:
-        for _, ar in alerts_df.iterrows():
-            fig.add_shape(type="line", x0=df.index[0], x1=df.index[-1],
-                          y0=ar["price"], y1=ar["price"],
-                          line=dict(color="#ff9800", width=1.2, dash="dashdot"),
-                          row=1, col=1)
-            fig.add_annotation(x=df.index[0], y=ar["price"],
-                               text=f"🔔 {ar['price']:,.2f}",
-                               showarrow=False, xanchor="right",
-                               font=dict(color="#ff9800", size=9), row=1, col=1)
 
     fig.update_layout(
         title=dict(text=f"<b>{ticker}</b> — Candlestick + S/R Levels",
@@ -658,6 +646,44 @@ def _exec_snapshot(portfolio_items: tuple) -> dict:
     }
 
 
+# ─── Section 5F: Portfolio News Feed ────────────────────────────────────────
+
+@st.cache_data(ttl=300)
+def _fetch_portfolio_news(tickers_tuple: tuple) -> list:
+    """Fetch recent news for all portfolio tickers — cached 5 min"""
+    from datetime import datetime, timezone
+    all_news = []
+    for tk in tickers_tuple:
+        try:
+            items = yf.Ticker(tk).news or []
+            for item in items[:4]:  # max 4 per ticker
+                all_news.append({
+                    "ticker":    tk,
+                    "title":     item.get("title", ""),
+                    "publisher": item.get("publisher", ""),
+                    "link":      item.get("link", "#"),
+                    "ts":        int(item.get("providerPublishTime", 0)),
+                })
+        except Exception:
+            pass
+    all_news.sort(key=lambda x: x["ts"], reverse=True)
+    return all_news[:20]
+
+
+def _news_time_label(ts: int) -> str:
+    """Convert Unix timestamp → human-readable Thai label"""
+    from datetime import datetime, timezone, timedelta
+    if not ts:
+        return ""
+    now  = datetime.now(timezone.utc)
+    pub  = datetime.fromtimestamp(ts, tz=timezone.utc)
+    diff = now - pub
+    mins = int(diff.total_seconds() // 60)
+    if mins < 60:    return f"{mins} นาทีที่แล้ว"
+    if mins < 1440:  return f"{mins // 60} ชม.ที่แล้ว"
+    return f"{mins // 1440} วันที่แล้ว"
+
+
 # ─── Section 6: Main App ─────────────────────────────────────────────────────
 
 def main():
@@ -687,10 +713,10 @@ def main():
     st.caption(f"Last session: {datetime.now().strftime('%d %b %Y %H:%M')}")
 
     tab_exec, tab_input, tab_chart, tab_adv = st.tabs([
-        "🏠  Summary",
-        "✏️  กรอกพอร์ต",
+        "🏠  ภาพรวม",
+        "✏️  พอร์ตของฉัน",
         "📊  Chart & Analysis",
-        "🚀  Advanced Analytics",
+        "🚀  Advanced",
     ])
     # Hidden tabs — preserved for future use
     tab_port  = None  # hidden below with if False:
@@ -785,30 +811,12 @@ def main():
             with _col_act:
                 st.markdown("### 🎯 Action Items")
 
-                _active_alerts = alert_load_active()
-                _prices        = _snap.get("prices", {})
-                _rows_snap     = _snap.get("rows", [])
+                _prices    = _snap.get("prices", {})
+                _rows_snap = _snap.get("rows", [])
 
                 _has_action = False
 
-                # 1) Alerts near trigger (within 1.5%)
-                for _al in _active_alerts.to_dict("records"):
-                    _atk    = str(_al.get("ticker", "")).upper()
-                    _aprice = float(_al.get("price", 0))
-                    _acurr  = _prices.get(_atk)
-                    if _acurr and _aprice > 0:
-                        _dist = abs(_acurr - _aprice) / _aprice * 100
-                        if _dist <= 1.5:
-                            _dir = "🔴 ราคาต่ำกว่า" if _acurr < _aprice else "🟢 ราคาสูงกว่า"
-                            st.markdown(
-                                f'<div class="action-card action-warn">'
-                                f'<b>🔔 Alert ใกล้ trigger: {_atk}</b><br>'
-                                f'{_dir} target ${_aprice:,.2f} อยู่ {_dist:.1f}%'
-                                f'</div>', unsafe_allow_html=True
-                            )
-                            _has_action = True
-
-                # 2) Big movers (day change > ±3%)
+                # 1) Big movers (day change > ±3%)
                 for _r in _rows_snap:
                     _d = _r["day_chg_pct"]
                     if abs(_d) >= 3.0:
@@ -942,7 +950,39 @@ def main():
                             st.session_state["chart_jump_trigger"]  = True
                             st.rerun()
 
+            # ── Portfolio News Feed ─────────────────────────────────────
             st.divider()
+            st.markdown("### 📰 ข่าวหุ้นในพอร์ต")
+            _news_tickers = tuple(
+                item["ticker"].upper()
+                for item in st.session_state.get("portfolio", [])
+                if item.get("ticker") and float(item.get("qty", 0)) > 0
+            )
+            if _news_tickers:
+                with st.spinner("⏳ กำลังโหลดข่าว …"):
+                    _news_items = _fetch_portfolio_news(_news_tickers)
+                if _news_items:
+                    for _ni in _news_items:
+                        _tl = _news_time_label(_ni["ts"])
+                        st.markdown(
+                            f'<div style="padding:10px 14px;margin-bottom:8px;'
+                            f'border-left:3px solid #3b82f6;'
+                            f'background:rgba(59,130,246,0.06);border-radius:6px;">'
+                            f'<span style="background:#1d4ed8;color:#fff;font-size:11px;'
+                            f'padding:2px 7px;border-radius:4px;font-weight:700;'
+                            f'margin-right:8px;">{_ni["ticker"]}</span>'
+                            f'<a href="{_ni["link"]}" target="_blank" '
+                            f'style="color:#e2e8f0;text-decoration:none;font-size:14px;'
+                            f'font-weight:500;">{_ni["title"]}</a><br>'
+                            f'<span style="color:#64748b;font-size:11px;">'
+                            f'{_ni["publisher"]}  ·  {_tl}</span>'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
+                else:
+                    st.info("ไม่พบข่าวในขณะนี้")
+            else:
+                st.info("เพิ่มหุ้นในพอร์ตเพื่อดูข่าว")
 
             # ── Quick Night Diary ───────────────────────────────────────
             st.markdown("### 📝 Quick Night Diary")
@@ -1308,29 +1348,7 @@ def main():
             st.session_state["chart_ticker"]      = fetched
             st.session_state["chart_curr_price"]  = float(curr)
 
-            active_alerts = alert_load_active(fetched)
-            triggered = []
-            if not active_alerts.empty:
-                for _, ar in active_alerts.iterrows():
-                    hit = (ar["alert_type"] == "above" and curr >= ar["price"]) or \
-                          (ar["alert_type"] == "below" and curr <= ar["price"])
-                    if hit:
-                        triggered.append(ar)
-                        alert_trigger(int(ar["id"]))
-
-            if triggered:
-                # ── Mark this ticker so sidebar can show 🔔 badge ────────
-                st.session_state.setdefault("alerted_tickers", set()).add(fetched.upper())
-                for ar in triggered:
-                    direction = "⬆️ ราคาขึ้นเกิน" if ar["alert_type"] == "above" else "⬇️ ราคาลงถึง"
-                    st.toast(f"🔔 ALERT {fetched}: {direction} ${ar['price']:,.2f}!", icon="🔔")
-                    st.warning(
-                        f"🔔 **ALERT TRIGGERED** — {fetched}  {direction} "
-                        f"**${ar['price']:,.2f}**"
-                        + (f"  |  {ar['note']}" if ar['note'] else "")
-                    )
-
-            fig = build_candlestick(df, fetched, supports, resistances, active_alerts)
+            fig = build_candlestick(df, fetched, supports, resistances)
             st.plotly_chart(fig, use_container_width=True)
 
             st.markdown("---")
@@ -1355,53 +1373,6 @@ def main():
                     ]), hide_index=True, use_container_width=True)
                 else:
                     st.info("ไม่พบแนวต้าน")
-
-            st.markdown("---")
-
-            # ════ 🔔 Price Alert ════
-            st.markdown("### 🔔 ตั้ง Price Alert")
-            st.caption("ระบบจะแจ้งเตือนทันทีที่กด **Update Data** และราคาแตะระดับที่ตั้งไว้")
-
-            a_col1, a_col2, a_col3, a_col4 = st.columns([1.5, 1, 2, 1])
-            with a_col1:
-                a_type = st.selectbox("ประเภท",
-                    ["above — ราคาขึ้นเกิน", "below — ราคาลงถึง"],
-                    label_visibility="collapsed")
-            with a_col2:
-                a_price = st.number_input("ราคา ($)", value=round(curr, 2),
-                    min_value=0.01, step=0.5, format="%.2f",
-                    label_visibility="collapsed")
-            with a_col3:
-                a_note = st.text_input("หมายเหตุ (ไม่บังคับ)",
-                    placeholder="เช่น แนวต้านหลัก / Stop loss",
-                    label_visibility="collapsed")
-            with a_col4:
-                if st.button("➕ Add Alert", use_container_width=True):
-                    a_type_key = "above" if "above" in a_type else "below"
-                    alert_add(fetched, a_type_key, a_price, a_note)
-                    st.success(f"✅ Alert ตั้งไว้ที่ ${a_price:,.2f}")
-                    st.rerun()
-
-            fresh_alerts = alert_load_active(fetched)
-            if not fresh_alerts.empty:
-                st.caption(f"🟠 Active alerts สำหรับ {fetched}: {len(fresh_alerts)} รายการ")
-                for _, ar in fresh_alerts.iterrows():
-                    icon = "⬆️" if ar["alert_type"] == "above" else "⬇️"
-                    a1, a2 = st.columns([5, 1])
-                    with a1:
-                        note_txt = f" — {ar['note']}" if ar['note'] else ""
-                        st.markdown(
-                            f"{icon} **${ar['price']:,.2f}** "
-                            f"({'ราคาขึ้นเกิน' if ar['alert_type']=='above' else 'ราคาลงถึง'})"
-                            f"{note_txt}  `{ar['created_at']}`"
-                        )
-                    with a2:
-                        if st.button("🗑️", key=f"dal_{ar['id']}"):
-                            alert_delete(int(ar["id"]))
-                            st.rerun()
-            else:
-                st.caption("ไม่มี active alert สำหรับหุ้นนี้")
-
 
             # ── 🎯 Strategic Entry Planner ────────────────────────────────
             st.divider()
