@@ -88,10 +88,16 @@ def _get_ws(sheet_name: str):
     except Exception as _e:
         if "worksheetnotfound" in type(_e).__name__.lower() or "not found" in str(_e).lower():
             headers = HEADERS.get(sheet_name, [])
-            ws = ss.add_worksheet(title=sheet_name, rows=1000, cols=max(len(headers), 1))
-            if headers:
-                ws.append_row(headers)
-            return ws
+            try:
+                ws = ss.add_worksheet(title=sheet_name, rows=1000, cols=max(len(headers), 1))
+                if headers:
+                    ws.append_row(headers)
+                return ws
+            except Exception as _e2:
+                # sheet ถูกสร้างไปแล้วโดย _ensure_sheets() หรือ thread อื่น — ดึงตรงๆ แทน
+                if "already exists" in str(_e2).lower():
+                    return ss.worksheet(sheet_name)
+                raise
         raise
 
 
