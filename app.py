@@ -581,7 +581,7 @@ def _exec_snapshot(portfolio_items: tuple) -> dict:
         if not tk or qty <= 0:
             continue
         try:
-            h = yf.Ticker(tk).history(period="30d")
+            h = yf.Ticker(tk).history(period="6mo")
             if h.empty:
                 continue
             curr = float(h["Close"].iloc[-1])
@@ -594,17 +594,14 @@ def _exec_snapshot(portfolio_items: tuple) -> dict:
             pnl_pct     = (curr - cost) / cost * 100 if cost > 0 else 0.0
             day_chg_pct = (curr - prev) / prev  * 100 if prev > 0 else 0.0
 
-            # ── Pivot Points (Floor Trader) — ใช้ข้อมูลวันก่อนหน้า ──────────
-            # P = (H + L + C) / 3
-            # R1 = 2P − L  |  S1 = 2P − H
-            pivot = support = resistance = None
-            if len(h) >= 2:
-                ph = float(h["High"].iloc[-2])
-                pl = float(h["Low"].iloc[-2])
-                pc = float(h["Close"].iloc[-2])
-                pivot      = (ph + pl + pc) / 3.0
-                resistance = round(2 * pivot - pl, 2)   # R1
-                support    = round(2 * pivot - ph, 2)   # S1
+            # ── Local Extrema S/R — เหมือน Chart Analysis ─────────────────
+            support = resistance = None
+            try:
+                _sups, _ress = find_support_resistance(h, order=5)
+                support    = _sups[-1] if _sups else None   # แนวรับที่ใกล้ที่สุด (สูงสุดใต้ราคา)
+                resistance = _ress[0]  if _ress else None   # แนวต้านที่ใกล้ที่สุด (ต่ำสุดเหนือราคา)
+            except Exception:
+                pass
 
             rows.append({
                 "ticker":       tk,
@@ -613,9 +610,8 @@ def _exec_snapshot(portfolio_items: tuple) -> dict:
                 "mkt_val":      mkt_now,
                 "cost_usd":     cost_usd,
                 "pnl_pct":      pnl_pct,
-                "pivot":        pivot,
-                "support":      support,    # S1
-                "resistance":   resistance, # R1
+                "support":      support,
+                "resistance":   resistance,
             })
             prices[tk]      = curr
             port_series[tk] = h["Close"] * qty * fx
@@ -830,9 +826,9 @@ def main():
                         "Ticker":          _df_raw["ticker"],
                         "Price ($)":       _df_raw["price"].map(lambda x: f"${x:,.2f}"),
                         "Day %":           _df_raw["day_chg_pct"].map(lambda x: f"{x:+.2f}%"),
-                        "Support S1 ▼":   _df_raw.apply(
+                        "Support ▼":   _df_raw.apply(
                             lambda r: _fmt_level(r["price"], r.get("support")), axis=1),
-                        "Resistance R1 ▲": _df_raw.apply(
+                        "Resistance ▲": _df_raw.apply(
                             lambda r: _fmt_level(r["price"], r.get("resistance")), axis=1),
                         "P&L %":           _df_raw["pnl_pct"].map(lambda x: f"{x:+.2f}%"),
                         # ซ่อน _dist_s / _dist_r ไว้สำหรับ coloring
@@ -888,13 +884,13 @@ def main():
                         elif dist <= 15: return "color: #f97316"                    # 7-15% — ส้ม
                         return "color: #10b981"                                     # >15% — เขียว
 
-                    _display = _df_snap[["Ticker","Price ($)","Day %","Support S1 ▼","Resistance R1 ▲","P&L %"]]
+                    _display = _df_snap[["Ticker","Price ($)","Day %","Support ▼","Resistance ▲","P&L %"]]
                     _styled = _display.style \
                         .map(_color_pct,        subset=["Day %", "P&L %"]) \
-                        .map(_color_support,    subset=["Support S1 ▼"]) \
-                        .map(_color_resistance, subset=["Resistance R1 ▲"])
+                        .map(_color_support,    subset=["Support ▼"]) \
+                        .map(_color_resistance, subset=["Resistance ▲"])
                     st.dataframe(_styled, use_container_width=True, hide_index=True)
-                    st.caption("S1/R1 = Pivot Points จาก H/L/C วันก่อนหน้า  |  Support: 🟢 ≤3% · 🟠 ≤7% · 🟡 ≤15% · 🔴 >15%  |  Resistance: 🔴 ≤3% · 🟡 ≤7% · 🟠 ≤15% · 🟢 >15%")
+                    st.caption("แนวรับ/แนวต้าน = Local Extrema (เหมือน Chart Analysis, 6 เดือนย้อนหลัง)  |  Support: 🟢 ≤3% · 🟠 ≤7% · 🟡 ≤15% · 🔴 >15%  |  Resistance: 🔴 ≤3% · 🟡 ≤7% · 🟠 ≤15% · 🟢 >15%")
                 else:
                     st.info("ไม่มีข้อมูลราคา")
 
