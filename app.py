@@ -702,6 +702,24 @@ def main():
     # TAB EXEC — 🏠 Executive Summary
     # ════════════════════════════════════════════════════════════════════
     with tab_exec:
+        # ── Auto-jump to Chart tab if triggered from Portfolio Snapshot ──
+        if st.session_state.get("chart_jump_trigger"):
+            import streamlit.components.v1 as _comp_v1
+            _comp_v1.html("""
+            <script>
+            setTimeout(function() {
+                var tabs = window.parent.document.querySelectorAll('[data-baseweb="tab"]');
+                for (var i = 0; i < tabs.length; i++) {
+                    if (tabs[i].innerText.includes('Chart')) {
+                        tabs[i].click();
+                        break;
+                    }
+                }
+            }, 150);
+            </script>
+            """, height=0)
+            st.session_state["chart_jump_trigger"] = False
+
         st.markdown("## 🏠 Executive Summary")
 
         _port_items = st.session_state.get("portfolio", [])
@@ -905,6 +923,24 @@ def main():
                     st.caption("แนวรับ/แนวต้าน = Local Extrema (เหมือน Chart Analysis, 6 เดือนย้อนหลัง)  |  Support: 🟢 ≤3% · 🟠 ≤7% · 🟡 ≤15% · 🔴 >15%  |  Resistance: 🔴 ≤3% · 🟡 ≤7% · 🟠 ≤15% · 🟢 >15%")
                 else:
                     st.info("ไม่มีข้อมูลราคา")
+
+            # ── Quick-jump buttons — full-width below both columns ──────────
+            if _rows_snap:
+                st.markdown("**📊 เปิด Chart:**")
+                _tickers_in_snap = [r["ticker"] for r in _rows_snap]
+                _btn_jump_cols = st.columns(min(len(_tickers_in_snap), 8))
+                for _btn_i, _btk in enumerate(_tickers_in_snap):
+                    with _btn_jump_cols[_btn_i % len(_btn_jump_cols)]:
+                        if st.button(_btk, key=f"snap_goto_{_btk}",
+                                     use_container_width=True,
+                                     help=f"เปิด Chart Analysis สำหรับ {_btk}  (1y · 1d · SR=10)"):
+                            st.session_state["chart_jump_ticker"]   = _btk
+                            st.session_state["chart_jump_period"]   = "1y"
+                            st.session_state["chart_jump_interval"] = "1d"
+                            st.session_state["chart_jump_sr"]       = 10
+                            st.session_state["chart_jump_do_fetch"] = True
+                            st.session_state["chart_jump_trigger"]  = True
+                            st.rerun()
 
             st.divider()
 
@@ -1178,6 +1214,13 @@ def main():
     # TAB 1 — Chart & Analysis
     # ════════════════════════════════════
     with tab_chart:
+        # ── Consume jump flags from Portfolio Snapshot ─────────────────
+        _jump_ticker   = st.session_state.pop("chart_jump_ticker",   None)
+        _jump_period   = st.session_state.pop("chart_jump_period",   None)
+        _jump_interval = st.session_state.pop("chart_jump_interval", None)
+        _jump_sr       = st.session_state.pop("chart_jump_sr",       None)
+        _jump_do_fetch = st.session_state.pop("chart_jump_do_fetch", False)
+
         # ── Smart Ticker Selection: pull from portfolio ────────────────
         _ptk_list = [
             item["ticker"].upper().strip()
@@ -1186,37 +1229,47 @@ def main():
         ]
         if _ptk_list:
             _ptk_options = ["(พิมพ์เอง)"] + _ptk_list
+            # If jumped from snapshot, pre-select that ticker in the dropdown
+            _jump_port_idx = 0
+            if _jump_ticker and _jump_ticker.upper() in _ptk_list:
+                _jump_port_idx = _ptk_options.index(_jump_ticker.upper())
             _ptk_sel = st.selectbox(
                 "📌 เลือกจากพอร์ต",
                 options=_ptk_options,
-                index=0,
+                index=_jump_port_idx,
                 help="เลือก Ticker จากพอร์ตของคุณ หรือเลือก '(พิมพ์เอง)' เพื่อกรอก Ticker เอง",
             )
             _default_ticker = "" if _ptk_sel == "(พิมพ์เอง)" else _ptk_sel
         else:
             _default_ticker = "TSLA"
 
+        # Period / interval / sr defaults — override when coming from snapshot
+        _period_list   = ["1mo","3mo","6mo","1y","2y","5y"]
+        _interval_list = ["1d","1wk","1mo"]
+        _period_default_idx   = _period_list.index(_jump_period)   if _jump_period   in _period_list   else 2
+        _interval_default_idx = _interval_list.index(_jump_interval) if _jump_interval in _interval_list else 0
+        _sr_default           = _jump_sr if _jump_sr is not None else 10
+
         c1, c2, c3, c4 = st.columns([2.5, 1.2, 1.2, 1.2])
         with c1:
+            _ti_val = _jump_ticker if _jump_ticker else (_default_ticker if _default_ticker else "TSLA")
             ticker_input = st.text_input(
                 "🔍 Ticker Symbol",
-                value=_default_ticker if _default_ticker else "TSLA",
+                value=_ti_val,
                 placeholder="TSLA / AAPL / BTC-USD"
             ).upper().strip()
         with c2:
-            period = st.selectbox("Period",
-                ["1mo","3mo","6mo","1y","2y","5y"], index=2)
+            period = st.selectbox("Period", _period_list, index=_period_default_idx)
         with c3:
-            interval = st.selectbox("Interval",
-                ["1d","1wk","1mo"], index=0)
+            interval = st.selectbox("Interval", _interval_list, index=_interval_default_idx)
         with c4:
-            sr_order = st.slider("S/R Sensitivity", 2, 20, 10,
+            sr_order = st.slider("S/R Sensitivity", 2, 20, _sr_default,
                 help="ค่าสูง = Major level เท่านั้น")
 
         fetch_btn = st.button(
             "🔄  Update Data", use_container_width=True, type="primary")
 
-        if fetch_btn:
+        if fetch_btn or _jump_do_fetch:
             with st.spinner(f"⏳ กำลังดึงข้อมูล {ticker_input} …"):
                 try:
                     raw    = yf.Ticker(ticker_input)
