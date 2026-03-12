@@ -593,6 +593,19 @@ def _exec_snapshot(portfolio_items: tuple) -> dict:
             cost_usd = cost * qty * fx
             pnl_pct     = (curr - cost) / cost * 100 if cost > 0 else 0.0
             day_chg_pct = (curr - prev) / prev  * 100 if prev > 0 else 0.0
+
+            # ── Pivot Points (Floor Trader) — ใช้ข้อมูลวันก่อนหน้า ──────────
+            # P = (H + L + C) / 3
+            # R1 = 2P − L  |  S1 = 2P − H
+            pivot = support = resistance = None
+            if len(h) >= 2:
+                ph = float(h["High"].iloc[-2])
+                pl = float(h["Low"].iloc[-2])
+                pc = float(h["Close"].iloc[-2])
+                pivot      = (ph + pl + pc) / 3.0
+                resistance = round(2 * pivot - pl, 2)   # R1
+                support    = round(2 * pivot - ph, 2)   # S1
+
             rows.append({
                 "ticker":       tk,
                 "price":        curr,
@@ -600,6 +613,9 @@ def _exec_snapshot(portfolio_items: tuple) -> dict:
                 "mkt_val":      mkt_now,
                 "cost_usd":     cost_usd,
                 "pnl_pct":      pnl_pct,
+                "pivot":        pivot,
+                "support":      support,    # S1
+                "resistance":   resistance, # R1
             })
             prices[tk]      = curr
             port_series[tk] = h["Close"] * qty * fx
@@ -801,30 +817,80 @@ def main():
             with _col_snap:
                 st.markdown("### 📊 Portfolio Snapshot")
                 if _rows_snap:
-                    _df_snap = pd.DataFrame(_rows_snap)[
-                        ["ticker", "price", "day_chg_pct", "mkt_val", "pnl_pct"]
-                    ]
-                    _df_snap.columns = ["Ticker", "Price ($)", "Day %", "Mkt Value ($)", "P&L %"]
-                    _df_snap["Price ($)"]    = _df_snap["Price ($)"].map(lambda x: f"${x:,.2f}")
-                    _df_snap["Mkt Value ($)"] = _df_snap["Mkt Value ($)"].map(lambda x: f"${x:,.0f}")
+                    _df_raw = pd.DataFrame(_rows_snap)
 
-                    def _color_pnl(val):
+                    # ── helper: format level with % distance from price ──
+                    def _fmt_level(price, level):
+                        if level is None or (isinstance(level, float) and pd.isna(level)):
+                            return "—"
+                        dist = (level - price) / price * 100
+                        return f"${level:,.2f} ({dist:+.1f}%)"
+
+                    _df_snap = pd.DataFrame({
+                        "Ticker":          _df_raw["ticker"],
+                        "Price ($)":       _df_raw["price"].map(lambda x: f"${x:,.2f}"),
+                        "Day %":           _df_raw["day_chg_pct"].map(lambda x: f"{x:+.2f}%"),
+                        "Support S1 ▼":   _df_raw.apply(
+                            lambda r: _fmt_level(r["price"], r.get("support")), axis=1),
+                        "Resistance R1 ▲": _df_raw.apply(
+                            lambda r: _fmt_level(r["price"], r.get("resistance")), axis=1),
+                        "P&L %":           _df_raw["pnl_pct"].map(lambda x: f"{x:+.2f}%"),
+                        # ซ่อน _dist_s / _dist_r ไว้สำหรับ coloring
+                        "_dist_s": _df_raw.apply(
+                            lambda r: (r.get("support", r["price"]) - r["price"]) / r["price"] * 100
+                            if r.get("support") is not None else 0.0, axis=1),
+                        "_dist_r": _df_raw.apply(
+                            lambda r: (r.get("resistance", r["price"]) - r["price"]) / r["price"] * 100
+                            if r.get("resistance") is not None else 0.0, axis=1),
+                    })
+
+                    def _color_row(val, col_name, row_idx):
+                        """color by value sign or proximity to S/R"""
+                        try:
+                            v = float(str(val).replace("%","").replace("+","").replace("$","").replace(",","").split("(")[0].strip())
+                        except Exception:
+                            return ""
+                        if col_name in ("Day %", "P&L %"):
+                            if v > 0:   return "color: #34d399; font-weight:700"
+                            elif v < 0: return "color: #f87171; font-weight:700"
+                        return ""
+
+                    def _color_pct(val):
                         try:
                             v = float(str(val).replace("%","").replace("+",""))
                         except Exception:
                             return ""
-                        if v > 0:
-                            return "color: #34d399; font-weight:700"
-                        elif v < 0:
-                            return "color: #f87171; font-weight:700"
+                        if v > 0:   return "color: #34d399; font-weight:700"
+                        elif v < 0: return "color: #f87171; font-weight:700"
                         return ""
 
-                    _df_snap["Day %"]   = _df_snap["Day %"].map(lambda x: f"{x:+.2f}%")
-                    _df_snap["P&L %"]   = _df_snap["P&L %"].map(lambda x: f"{x:+.2f}%")
+                    def _color_support(val):
+                        """เขียว = อยู่เหนือ support / เหลือง = ใกล้ support (<2%) / แดง = หลุด support"""
+                        try:
+                            dist = float(str(val).split("(")[1].replace("%","").replace(")","").replace("+",""))
+                        except Exception:
+                            return ""
+                        if dist >= -1.5:   return "color: #fbbf24; font-weight:700"  # ใกล้ (<1.5%)
+                        elif dist >= -5:   return "color: #34d399"                   # ปลอดภัย
+                        return "color: #94a3b8"                                       # ห่าง
 
-                    _styled = _df_snap.style \
-                        .map(_color_pnl, subset=["Day %", "P&L %"])
+                    def _color_resistance(val):
+                        """แดง = ใกล้ resistance (<2%) / เขียว = ห่างออกไป"""
+                        try:
+                            dist = float(str(val).split("(")[1].replace("%","").replace(")","").replace("+",""))
+                        except Exception:
+                            return ""
+                        if dist <= 1.5:   return "color: #f87171; font-weight:700"   # ใกล้ (<1.5%)
+                        elif dist <= 5:   return "color: #fb923c"                    # ระวัง
+                        return "color: #94a3b8"                                       # ห่าง
+
+                    _display = _df_snap[["Ticker","Price ($)","Day %","Support S1 ▼","Resistance R1 ▲","P&L %"]]
+                    _styled = _display.style \
+                        .map(_color_pct,        subset=["Day %", "P&L %"]) \
+                        .map(_color_support,    subset=["Support S1 ▼"]) \
+                        .map(_color_resistance, subset=["Resistance R1 ▲"])
                     st.dataframe(_styled, use_container_width=True, hide_index=True)
+                    st.caption("S1/R1 = Pivot Points จาก H/L/C วันก่อนหน้า  |  🟡 ใกล้ level (<1.5%)  🟠 ระวัง (<5%)")
                 else:
                     st.info("ไม่มีข้อมูลราคา")
 
