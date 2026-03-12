@@ -126,8 +126,15 @@ def _ensure_sheets() -> tuple[bool, str]:
         existing = [ws.title for ws in ss.worksheets()]
         for sheet_name, headers in HEADERS.items():
             if sheet_name not in existing:
-                ws = ss.add_worksheet(title=sheet_name, rows=1000, cols=len(headers))
-                ws.append_row(headers)
+                try:
+                    ws = ss.add_worksheet(title=sheet_name, rows=1000, cols=len(headers))
+                    ws.append_row(headers)
+                except Exception as _inner:
+                    # sheet ถูกสร้างไปแล้ว (race condition หรือ retry) — ไม่ใช่ error จริง
+                    if "already exists" in str(_inner).lower():
+                        pass
+                    else:
+                        raise
         return True, ""
     except Exception as e:
         return False, str(e)
