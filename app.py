@@ -205,10 +205,22 @@ def find_support_resistance(df: pd.DataFrame, order: int = 10):
         if lows[i] <= np.min(lw) * 1.0005:
             support_idx.append(i)
 
-    def cluster(levels, threshold=0.015):
+    def cluster_sup(levels, threshold=0.05):
+        """Support: ถ้า 2 level ห่างกัน < 5% → เอาตัวบน (ใกล้ราคามากกว่า)"""
         if not levels:
             return []
-        levels = sorted(set(round(l, 2) for l in levels))
+        levels = sorted(set(round(l, 2) for l in levels), reverse=True)  # เรียงสูง→ต่ำ
+        out = [levels[0]]
+        for lv in levels[1:]:
+            if abs(out[-1] - lv) / lv > threshold:
+                out.append(lv)
+        return list(reversed(out))  # คืนกลับเป็นต่ำ→สูง
+
+    def cluster_res(levels, threshold=0.05):
+        """Resistance: ถ้า 2 level ห่างกัน < 5% → เอาตัวล่าง (ใกล้ราคามากกว่า)"""
+        if not levels:
+            return []
+        levels = sorted(set(round(l, 2) for l in levels))  # เรียงต่ำ→สูง
         out = [levels[0]]
         for lv in levels[1:]:
             if abs(lv - out[-1]) / out[-1] > threshold:
@@ -216,8 +228,8 @@ def find_support_resistance(df: pd.DataFrame, order: int = 10):
         return out
 
     current = df["Close"].iloc[-1]
-    supports    = [s for s in cluster([lows[i]  for i in support_idx])    if s < current]
-    resistances = [r for r in cluster([highs[i] for i in resistance_idx]) if r > current]
+    supports    = [s for s in cluster_sup([lows[i]  for i in support_idx])    if s < current]
+    resistances = [r for r in cluster_res([highs[i] for i in resistance_idx]) if r > current]
     return supports[-6:], resistances[:6]
 
 
