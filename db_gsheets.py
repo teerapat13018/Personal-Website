@@ -53,7 +53,7 @@ WS_REBAL    = "rebalancing"
 HEADERS = {
     WS_DIARY:     ["id","ticker","entry_date","entry_type","price_ref","note","created_at"],
     WS_ALERTS:    ["id","ticker","alert_type","price","note","active","created_at","triggered_at"],
-    WS_WATCHLIST: ["id","ticker","note","added_at"],
+    WS_WATCHLIST: ["id","ticker","target_price","note","added_at"],
     WS_PORTFOLIO: ["id","ticker","qty","avg_cost"],
     WS_TRADES:    ["id","ticker","support_price","usd_amount","shares","created_at"],
     WS_ETF:       ["etf_ticker","symbol","weight_pct"],
@@ -315,7 +315,7 @@ def portfolio_save(items: list):
 # WATCHLIST helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def wl_add(ticker, note=""):
+def wl_add(ticker, note="", target_price=None):
     df = _ws_to_df(WS_WATCHLIST)
     if not df.empty and ticker.upper() in df["ticker"].str.upper().values:
         return                                   # unique constraint
@@ -323,6 +323,7 @@ def wl_add(ticker, note=""):
     ws.append_row([
         _new_id(),
         ticker.upper(),
+        float(target_price) if target_price else "",   # target_price (optional)
         note,
         datetime.now().strftime("%Y-%m-%d %H:%M"),
     ])
@@ -333,6 +334,8 @@ def wl_load() -> pd.DataFrame:
     df = _ws_to_df(WS_WATCHLIST)
     if df.empty:
         return df
+    if "target_price" in df.columns:
+        df["target_price"] = pd.to_numeric(df["target_price"], errors="coerce")
     return df.sort_values("added_at", ascending=False).reset_index(drop=True)
 
 
