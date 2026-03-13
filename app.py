@@ -3015,6 +3015,213 @@ def _cached_fetch_multiples(ticker: str) -> dict:
     return fetch_multiples(ticker)
 
 
+def _val_inject_css():
+    """Inject Theme-C CSS — Dark Gradient / Gamified / Mobile-friendly."""
+    st.markdown("""
+<style>
+/* ── Theme C: Dark Gradient + Glow ─────────────────────────────────────── */
+
+/* Page background */
+[data-testid="stAppViewContainer"] > .main {
+    background: linear-gradient(160deg, #0d0d1a 0%, #12122a 50%, #0d1b2a 100%);
+    min-height: 100vh;
+}
+[data-testid="stSidebar"] {
+    background: #0a0a18 !important;
+}
+
+/* ── Wizard step progress bar ───────────────────────────────────────────── */
+.val-progress {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    margin: 0 auto 24px auto;
+    max-width: 560px;
+    padding: 0 8px;
+}
+.val-step-wrap { display:flex; flex-direction:column; align-items:center; gap:6px; }
+.val-step-circle {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 15px;
+    transition: all .3s ease;
+}
+.val-step-circle.done {
+    background: linear-gradient(135deg,#00b4d8,#0077b6);
+    color: #fff;
+    box-shadow: 0 0 14px rgba(0,180,216,.55);
+}
+.val-step-circle.active {
+    background: linear-gradient(135deg,#e94560,#c2185b);
+    color: #fff;
+    box-shadow: 0 0 18px rgba(233,69,96,.65);
+    animation: pulse-ring 2s ease-in-out infinite;
+}
+.val-step-circle.todo {
+    background: #1e1e3a;
+    color: #555;
+    border: 1.5px solid #333;
+}
+.val-step-label {
+    font-size: 11px;
+    color: #888;
+    text-align: center;
+    line-height: 1.3;
+    max-width: 80px;
+}
+.val-step-label.active { color: #e94560; font-weight: 600; }
+.val-step-label.done   { color: #00b4d8; }
+.val-connector {
+    flex: 1;
+    height: 2px;
+    margin-bottom: 18px;
+    max-width: 80px;
+}
+.val-connector.done   { background: linear-gradient(90deg,#00b4d8,#0077b6); }
+.val-connector.pending { background: #1e1e3a; }
+
+@keyframes pulse-ring {
+    0%,100% { box-shadow: 0 0 18px rgba(233,69,96,.65); }
+    50%      { box-shadow: 0 0 28px rgba(233,69,96,.9); }
+}
+
+/* ── Hero metric cards ──────────────────────────────────────────────────── */
+.val-hero-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    margin: 16px 0 24px 0;
+}
+.val-hero-card {
+    background: linear-gradient(145deg, #1a1a2e 0%, #16213e 100%);
+    border-radius: 14px;
+    padding: 18px 14px 14px 14px;
+    position: relative;
+    overflow: hidden;
+    transition: transform .2s ease, box-shadow .2s ease;
+}
+.val-hero-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 14px;
+    padding: 1.5px;
+    background: var(--card-accent, linear-gradient(135deg,#e94560,#7b2fff));
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+}
+.val-hero-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 32px rgba(0,0,0,.5);
+}
+.val-hero-card .hc-icon  { font-size: 18px; margin-bottom: 4px; }
+.val-hero-card .hc-label { font-size: 11px; color: #888; letter-spacing:.4px; text-transform:uppercase; }
+.val-hero-card .hc-value { font-size: 26px; font-weight: 800; color: #eaeaea; margin: 4px 0 2px 0; line-height:1.1; }
+.val-hero-card .hc-sub   { font-size: 11px; color: #666; }
+.val-hero-card .hc-glow  { position:absolute; width:80px; height:80px; border-radius:50%; opacity:.12; right:-10px; top:-10px; }
+.card-intrinsic { --card-accent: linear-gradient(135deg,#e94560,#c2185b); }
+.card-intrinsic .hc-value { color: #ff6b8a; }
+.card-intrinsic .hc-glow  { background: #e94560; }
+.card-mos    { --card-accent: linear-gradient(135deg,#7b2fff,#5c13c5); }
+.card-mos    .hc-value { color: #b57bff; }
+.card-mos    .hc-glow  { background: #7b2fff; }
+.card-ev     { --card-accent: linear-gradient(135deg,#00b4d8,#0077b6); }
+.card-ev     .hc-value { color: #5bc8e8; }
+.card-ev     .hc-glow  { background: #00b4d8; }
+.card-equity { --card-accent: linear-gradient(135deg,#00e676,#00897b); }
+.card-equity .hc-value { color: #66ffa6; }
+.card-equity .hc-glow  { background: #00e676; }
+
+/* ── Signal badge ───────────────────────────────────────────────────────── */
+.val-signal-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 18px;
+    border-radius: 99px;
+    font-weight: 700;
+    font-size: 14px;
+    letter-spacing: .3px;
+    margin-bottom: 4px;
+}
+.badge-undervalued { background:rgba(0,230,118,.15); color:#00e676; border:1px solid rgba(0,230,118,.4); }
+.badge-fairly      { background:rgba(255,171,0,.15);  color:#ffab00; border:1px solid rgba(255,171,0,.4); }
+.badge-overvalued  { background:rgba(233,69,96,.15);  color:#e94560; border:1px solid rgba(233,69,96,.4); }
+
+/* ── Reverse DCF cards ──────────────────────────────────────────────────── */
+.rdcf-card {
+    background: linear-gradient(145deg, #1a1a2e, #0f1729);
+    border-radius: 14px;
+    padding: 20px;
+    position: relative;
+    overflow: hidden;
+}
+.rdcf-card .rdcf-big { font-size: 36px; font-weight: 800; margin: 8px 0 4px 0; }
+
+/* ── Pill button overrides ──────────────────────────────────────────────── */
+div[data-testid="stButton"] > button[kind="primary"] {
+    background: linear-gradient(135deg, #e94560 0%, #7b2fff 100%) !important;
+    border: none !important;
+    border-radius: 99px !important;
+    font-weight: 700 !important;
+    letter-spacing: .4px !important;
+    box-shadow: 0 4px 18px rgba(233,69,96,.35) !important;
+    transition: opacity .2s !important;
+}
+div[data-testid="stButton"] > button[kind="primary"]:hover {
+    opacity: .88 !important;
+}
+div[data-testid="stButton"] > button[kind="secondary"],
+div[data-testid="stButton"] > button:not([kind]) {
+    border-radius: 99px !important;
+    border-color: #333 !important;
+    background: #1a1a2e !important;
+    color: #ccc !important;
+}
+
+/* ── Section headers ────────────────────────────────────────────────────── */
+.val-section-head {
+    font-size: 15px;
+    font-weight: 700;
+    color: #a8a8d8;
+    text-transform: uppercase;
+    letter-spacing: .8px;
+    margin: 20px 0 10px 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.val-section-head::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg,#2a2a4a,transparent);
+    margin-left: 8px;
+}
+
+/* ── Mobile responsive ──────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+    .val-hero-grid {
+        grid-template-columns: repeat(2, 1fr) !important;
+        gap: 10px !important;
+    }
+    .val-hero-card .hc-value { font-size: 20px !important; }
+    .val-progress { max-width: 100%; }
+    .val-connector { max-width: 40px; }
+    .val-step-label { font-size: 10px; max-width: 62px; }
+}
+@media (max-width: 480px) {
+    .val-hero-grid { grid-template-columns: 1fr 1fr !important; }
+    .val-hero-card { padding: 12px 10px !important; }
+    .val-hero-card .hc-value { font-size: 18px !important; }
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 def _render_valuation_tab():
     """Render the 💎 Valuation tab — 3-step DCF Wizard"""
     from dcf_engine import DCFInputs, DCFOutputs, run_dcf, run_scenarios, sensitivity_table, reverse_dcf, reverse_dcf_single_stage, fetch_multiples, implied_value_from_multiples
@@ -3068,20 +3275,36 @@ def _render_valuation_tab():
 def _val_wizard():
     from dcf_engine import DCFInputs, DCFOutputs, run_dcf, run_scenarios, sensitivity_table, reverse_dcf, reverse_dcf_single_stage, fetch_multiples, implied_value_from_multiples
 
+    # ── Inject Theme-C CSS ────────────────────────────────────────────────────
+    _val_inject_css()
+
     step = st.session_state["val_step"]
 
-    # ── Step breadcrumb ───────────────────────────────────────────────────────
-    step_labels = {1: "1️⃣  บริษัท & ตัวเลขพื้นฐาน", 2: "2️⃣  สมมติฐาน & ต้นทุนทุน", 3: "3️⃣  ผลการประเมิน"}
-    cols_steps  = st.columns(3)
-    for i, (s, lbl) in enumerate(step_labels.items(), start=1):
-        with cols_steps[i - 1]:
-            if s == step:
-                st.markdown(f"**:violet[{lbl}]**")
-            elif s < step:
-                st.markdown(f"✅ ~~{lbl}~~")
-            else:
-                st.markdown(f":gray[{lbl}]")
-    st.divider()
+    # ── Step progress bar (Theme C) ───────────────────────────────────────────
+    def _step_state(s):
+        if s < step:  return "done"
+        if s == step: return "active"
+        return "todo"
+
+    step_info = [
+        (1, "บริษัท &<br>ตัวเลขพื้นฐาน"),
+        (2, "สมมติฐาน &<br>ต้นทุนทุน"),
+        (3, "ผลการ<br>ประเมิน"),
+    ]
+    circles = ""
+    for idx, (s, lbl) in enumerate(step_info):
+        state = _step_state(s)
+        icon  = "✓" if state == "done" else str(s)
+        circles += f"""
+        <div class="val-step-wrap">
+            <div class="val-step-circle {state}">{icon}</div>
+            <div class="val-step-label {state}">{lbl}</div>
+        </div>"""
+        if idx < len(step_info) - 1:
+            conn_cls = "done" if step > s else "pending"
+            circles += f'<div class="val-connector {conn_cls}"></div>'
+
+    st.markdown(f'<div class="val-progress">{circles}</div>', unsafe_allow_html=True)
 
     saved = st.session_state.get("val_inputs", {})
 
@@ -3138,7 +3361,7 @@ def _val_wizard():
         _cur_idx     = _cur_opts.index(_cur_val) if _cur_val in _cur_opts else 0
         currency     = c3.selectbox("สกุลเงิน", _cur_opts, index=_cur_idx)
 
-        st.markdown("#### 💰 ตัวเลขปีล่าสุด (Base Year)")
+        st.markdown('<div class="val-section-head">💰 ตัวเลขปีล่าสุด (Base Year)</div>', unsafe_allow_html=True)
         st.caption("กรอกตัวเลขจาก Annual Report ปีล่าสุด  (หน่วย: ล้าน)")
 
         col1, col2 = st.columns(2)
@@ -3212,7 +3435,7 @@ def _val_wizard():
 
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown("#### 🚀 การเติบโตของรายได้")
+            st.markdown('<div class="val-section-head">🚀 การเติบโตของรายได้</div>', unsafe_allow_html=True)
             growth_yr1   = st.slider(
                 "Revenue Growth ปีที่ 1 (%)", -10.0, 50.0,
                 float(saved.get("revenue_growth_yr1",   0.12)) * 100, 0.5, format="%.1f%%",
@@ -3229,7 +3452,7 @@ def _val_wizard():
                 help="📍 สาธารณูปโภค / อาหาร = 10 ปี | Tech / Startup = 5 ปี | ยิ่งคาดเดาง่าย ยิ่งใช้ได้นานขึ้น"
             )
 
-            st.markdown("#### 📊 Margin & Reinvestment")
+            st.markdown('<div class="val-section-head">📊 Margin &amp; Reinvestment</div>', unsafe_allow_html=True)
             ebit_target  = st.slider(
                 "EBIT Margin เป้าหมาย (%)", 0.0, 50.0,
                 float(saved.get("ebit_margin_target", 0.15)) * 100, 0.5, format="%.1f%%",
@@ -3243,14 +3466,14 @@ def _val_wizard():
             )
 
         with col2:
-            st.markdown("#### 💸 ต้นทุนทุน (WACC)")
+            st.markdown('<div class="val-section-head">💸 ต้นทุนทุน (WACC)</div>', unsafe_allow_html=True)
             wacc         = st.slider(
                 "WACC (%)", 3.0, 20.0,
                 float(saved.get("wacc", 0.10)) * 100, 0.25, format="%.2f%%",
                 help="📍 WACC.com คำนวณให้แล้ว | หรือ CAPM: Rf + Beta × ERP (Beta จาก Yahoo Finance, Rf = Bond yield 10 ปี)"
             ) / 100
 
-            st.markdown("#### 🏁 Terminal Value")
+            st.markdown('<div class="val-section-head">🏁 Terminal Value</div>', unsafe_allow_html=True)
             term_growth  = st.slider(
                 "Terminal Growth Rate (%)", 0.0, 5.0,
                 float(saved.get("terminal_growth", 0.025)) * 100, 0.25, format="%.2f%%",
@@ -3262,7 +3485,7 @@ def _val_wizard():
                 help="📍 ROIC เฉลี่ย 5 ปีย้อนหลัง จาก Macrotrends หรือ Wisesheets | บริษัท moat แข็ง = สูงได้ | Commodity = ≈ WACC"
             ) / 100
 
-            st.markdown("#### 🛡️ Margin of Safety")
+            st.markdown('<div class="val-section-head">🛡️ Margin of Safety</div>', unsafe_allow_html=True)
             mos          = st.slider(
                 "Margin of Safety (%)", 0.0, 50.0,
                 float(saved.get("margin_of_safety", 0.20)) * 100, 5.0, format="%.0f%%",
@@ -3352,21 +3575,64 @@ def _val_wizard():
                 st.rerun()
             return
 
-        # ── Hero metrics ──────────────────────────────────────────────────────
-        st.markdown(f"### 📊 ผลการประเมิน — **{inp.company_name}** ({inp.ticker})")
-        h1, h2, h3, h4 = st.columns(4)
-        h1.metric("💎 Intrinsic Value/Share",   f"{out.intrinsic_per_share:,.2f} {cur}",
-                  help="มูลค่าที่แท้จริงต่อหุ้นจากโมเดล DCF")
-        h2.metric(f"🛡️ MOS Price (−{inp.margin_of_safety:.0%})",
-                  f"{out.mos_price:,.2f} {cur}",
-                  help="ราคาเป้าหมายหลังหัก Margin of Safety — ควรซื้อถ้าราคาต่ำกว่านี้")
-        h3.metric("🏛️ Enterprise Value",        f"{out.enterprise_value:,.0f}M {cur}")
-        h4.metric("💼 Equity Value",            f"{out.equity_value:,.0f}M {cur}")
+        # ── Hero metrics (Theme C glow cards) ─────────────────────────────────
+        st.markdown(
+            f"<div style='font-size:22px;font-weight:800;color:#eaeaea;margin-bottom:4px'>"
+            f"📊 ผลการประเมิน — "
+            f"<span style='color:#e94560'>{inp.company_name}</span>"
+            f" <span style='color:#555;font-size:16px'>({inp.ticker})</span></div>",
+            unsafe_allow_html=True,
+        )
+
+        # compare vs market price for delta
+        _cp = inp.current_price if inp.current_price and inp.current_price > 0 else None
+        _iv = out.intrinsic_per_share
+        _mos = out.mos_price
+        if _cp:
+            _iv_pct = (_iv - _cp) / _cp * 100
+            _mos_pct = (_mos - _cp) / _cp * 100
+            _iv_delta  = f"<span style='color:{'#00e676' if _iv_pct>=0 else '#e94560'};font-size:12px'>{'▲' if _iv_pct>=0 else '▼'} {abs(_iv_pct):.1f}% vs ตลาด</span>"
+            _mos_delta = f"<span style='color:{'#00e676' if _mos_pct>=0 else '#e94560'};font-size:12px'>{'▲' if _mos_pct>=0 else '▼'} {abs(_mos_pct):.1f}% vs ตลาด</span>"
+        else:
+            _iv_delta = _mos_delta = ""
+
+        st.markdown(f"""
+<div class="val-hero-grid">
+  <div class="val-hero-card card-intrinsic">
+    <div class="hc-glow"></div>
+    <div class="hc-icon">💎</div>
+    <div class="hc-label">Intrinsic Value / Share</div>
+    <div class="hc-value">{out.intrinsic_per_share:,.2f}</div>
+    <div class="hc-sub">{cur} / share &nbsp;{_iv_delta}</div>
+  </div>
+  <div class="val-hero-card card-mos">
+    <div class="hc-glow"></div>
+    <div class="hc-icon">🛡️</div>
+    <div class="hc-label">MOS Price (−{inp.margin_of_safety:.0%})</div>
+    <div class="hc-value">{out.mos_price:,.2f}</div>
+    <div class="hc-sub">{cur} / share &nbsp;{_mos_delta}</div>
+  </div>
+  <div class="val-hero-card card-ev">
+    <div class="hc-glow"></div>
+    <div class="hc-icon">🏛️</div>
+    <div class="hc-label">Enterprise Value</div>
+    <div class="hc-value">{out.enterprise_value:,.0f}M</div>
+    <div class="hc-sub">{cur}</div>
+  </div>
+  <div class="val-hero-card card-equity">
+    <div class="hc-glow"></div>
+    <div class="hc-icon">💼</div>
+    <div class="hc-label">Equity Value</div>
+    <div class="hc-value">{out.equity_value:,.0f}M</div>
+    <div class="hc-sub">{cur}</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
         # ── Reverse DCF ───────────────────────────────────────────────────────
         if inp.current_price > 0:
             st.divider()
-            st.markdown("#### 🔍 ตลาดคาดอะไร? (Reverse DCF)")
+            st.markdown('<div class="val-section-head">🔍 ตลาดคาดอะไร? (Reverse DCF)</div>', unsafe_allow_html=True)
 
             rdcf  = reverse_dcf(inp)
             rdcf1 = reverse_dcf_single_stage(inp)
@@ -3374,31 +3640,37 @@ def _val_wizard():
             if rdcf.get("error") and not rdcf.get("converged", True):
                 st.warning(f"⚠️ Reverse DCF: {rdcf['error']}")
             else:
-                # ── Card บน: Multi-year implied growth ──────────────────────
+                # ── signal badge ─────────────────────────────────────────────
                 signal = rdcf.get("signal", "")
-                sig_color = {"undervalued": "#26a69a", "fairly_valued": "#f59e0b", "overvalued": "#ef5350"}.get(signal, "#888")
-                sig_icon  = {"undervalued": "🟢", "fairly_valued": "🟡", "overvalued": "🔴"}.get(signal, "⚪")
-                sig_label = {"undervalued": "ตลาดคาดน้อยกว่า assumption — อาจมี Upside",
-                             "fairly_valued": "ตลาดคาดใกล้เคียง assumption",
-                             "overvalued": "ตลาดคาดสูงกว่า assumption — ราคา Priced-in มาก"}.get(signal, "")
+                sig_color = {"undervalued": "#00e676", "fairly_valued": "#ffab00", "overvalued": "#e94560"}.get(signal, "#888")
+                sig_badge_cls = {"undervalued": "badge-undervalued", "fairly_valued": "badge-fairly", "overvalued": "badge-overvalued"}.get(signal, "badge-fairly")
+                sig_icon  = {"undervalued": "▲", "fairly_valued": "●", "overvalued": "▼"}.get(signal, "●")
+                sig_th_label = {"undervalued": "UNDERVALUED — ตลาดคาดน้อยกว่า assumption อาจมี Upside",
+                                "fairly_valued": "FAIRLY VALUED — ตลาดคาดใกล้เคียง assumption",
+                                "overvalued": "OVERVALUED — Priced-in มาก ระวัง Downside"}.get(signal, "")
 
                 implied_g  = rdcf.get("implied_growth_yr1", 0.0)
                 user_g     = inp.revenue_growth_yr1
                 diff       = rdcf.get("vs_user_growth", 0.0)
 
+                st.markdown(
+                    f'<span class="val-signal-badge {sig_badge_cls}">{sig_icon} {sig_th_label}</span>',
+                    unsafe_allow_html=True,
+                )
+
                 r1, r2 = st.columns(2)
                 with r1:
                     st.markdown(f"""
-<div style="background:#1e1e2e;border:1px solid {sig_color};border-radius:12px;padding:20px">
-  <div style="font-size:13px;color:#aaa;margin-bottom:6px">📈 Multi-year Implied Growth (Primary)</div>
-  <div style="font-size:32px;font-weight:700;color:{sig_color}">{implied_g:.1%} / ปี</div>
-  <div style="font-size:13px;color:#ccc;margin-top:8px">
-    ราคาตลาด <b>{inp.current_price:,.2f} {cur}</b> imply ว่าบริษัทต้องโต <b>{implied_g:.1%}</b> ในปีแรก
+<div class="rdcf-card" style="border:1px solid {sig_color}33">
+  <div style="font-size:11px;color:#888;letter-spacing:.5px;text-transform:uppercase">📈 Multi-year Implied Growth</div>
+  <div class="rdcf-big" style="color:{sig_color}">{implied_g:.1%}<span style="font-size:16px;color:#aaa"> / ปี</span></div>
+  <div style="font-size:13px;color:#ccc;margin-top:6px">
+    ราคาตลาด <b style="color:#eaeaea">{inp.current_price:,.2f} {cur}</b> imply ต้องโต <b style="color:{sig_color}">{implied_g:.1%}</b> ในปีแรก
   </div>
-  <div style="font-size:12px;color:#aaa;margin-top:6px">
-    Assumption ของคุณ: <b>{user_g:.1%}</b> &nbsp;|&nbsp; ส่วนต่าง: <b style="color:{sig_color}">{diff:+.1%}</b>
+  <div style="display:flex;gap:16px;margin-top:10px">
+    <div style="font-size:12px;color:#888">Assumption ของคุณ<br/><b style="color:#eaeaea;font-size:14px">{user_g:.1%}</b></div>
+    <div style="font-size:12px;color:#888">ส่วนต่าง<br/><b style="color:{sig_color};font-size:14px">{diff:+.1%}</b></div>
   </div>
-  <div style="font-size:13px;margin-top:10px">{sig_icon} {sig_label}</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -3407,16 +3679,18 @@ def _val_wizard():
                         rev_m  = rdcf1.get("revenue_multiple", 0.0)
                         ss_rev = rdcf1.get("implied_revenue",  0.0)
                         st.markdown(f"""
-<div style="background:#1e1e2e;border:1px solid #7c3aed;border-radius:12px;padding:20px">
-  <div style="font-size:13px;color:#aaa;margin-bottom:6px">🏁 Single-Stage Sanity Check (RKLB-style)</div>
-  <div style="font-size:32px;font-weight:700;color:#c084fc">{rev_m:.1f}x</div>
-  <div style="font-size:13px;color:#ccc;margin-top:8px">
-    ต้องโต <b>{rev_m:.1f} เท่า</b> จาก {inp.revenue_base:,.0f}M → {ss_rev:,.0f}M {cur}
+<div class="rdcf-card" style="border:1px solid #7b2fff44">
+  <div style="font-size:11px;color:#888;letter-spacing:.5px;text-transform:uppercase">🏁 Single-Stage Sanity Check</div>
+  <div class="rdcf-big" style="color:#b57bff">{rev_m:.1f}<span style="font-size:16px;color:#aaa">x Revenue</span></div>
+  <div style="font-size:13px;color:#ccc;margin-top:6px">
+    ต้องโต <b style="color:#b57bff">{rev_m:.1f} เท่า</b> → <b style="color:#eaeaea">{ss_rev:,.0f}M {cur}</b>
   </div>
-  <div style="font-size:12px;color:#aaa;margin-top:6px">
-    ที่ EBIT Margin {inp.ebit_margin_target:.0%} | RONIC {inp.terminal_roic:.0%} | g {inp.terminal_growth:.1%}
+  <div style="display:flex;gap:16px;margin-top:10px">
+    <div style="font-size:12px;color:#888">EBIT Margin<br/><b style="color:#eaeaea;font-size:14px">{inp.ebit_margin_target:.0%}</b></div>
+    <div style="font-size:12px;color:#888">RONIC<br/><b style="color:#eaeaea;font-size:14px">{inp.terminal_roic:.0%}</b></div>
+    <div style="font-size:12px;color:#888">g<br/><b style="color:#eaeaea;font-size:14px">{inp.terminal_growth:.1%}</b></div>
   </div>
-  <div style="font-size:12px;color:#888;margin-top:6px">⚠️ Single-stage = floor estimate (ไม่นับ negative FCFF ช่วงแรก)</div>
+  <div style="font-size:11px;color:#555;margin-top:8px">⚠️ Floor estimate — ไม่นับ negative FCFF ช่วงแรก</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -3436,7 +3710,7 @@ def _val_wizard():
         # ══════════════════════════════════════════════════════════════════════
         # ── Cross-validate: Peer Multiples (Comps) ────────────────────────────
         # ══════════════════════════════════════════════════════════════════════
-        st.markdown("#### 🏢 Cross-validate กับ Peer Companies (Comparable Multiples)")
+        st.markdown('<div class="val-section-head">🏢 Cross-validate — Peer Comparable Multiples</div>', unsafe_allow_html=True)
         st.caption(
             "กรอก Ticker ของบริษัทในอุตสาหกรรมเดียวกัน 3–5 ตัว → ดึง EV/EBITDA, P/E, EV/Revenue → "
             "คำนวณ implied value และเปรียบเทียบกับ DCF ของคุณ"
@@ -3672,7 +3946,7 @@ def _val_wizard():
         st.divider()
 
         # ── Scenario comparison ───────────────────────────────────────────────
-        st.markdown("#### 🎯 เปรียบเทียบ 3 Scenarios")
+        st.markdown('<div class="val-section-head">🎯 เปรียบเทียบ 3 Scenarios</div>', unsafe_allow_html=True)
         sc_cols = st.columns(3)
         sc_colors = {"Bull": "#26a69a", "Base": "#7c3aed", "Bear": "#ef5350"}
         sc_icons  = {"Bull": "🐂", "Base": "⚖️", "Bear": "🐻"}
@@ -3847,7 +4121,7 @@ def _val_wizard():
         st.divider()
 
         # ── Save button ───────────────────────────────────────────────────────
-        st.markdown("#### 💾 บันทึกการประเมินนี้")
+        st.markdown('<div class="val-section-head">💾 บันทึกการประเมินนี้</div>', unsafe_allow_html=True)
         save_notes = st.text_area("หมายเหตุ (ถ้ามี)", placeholder="เช่น ใช้ตัวเลข FY2024, สมมติว่า...", height=80)
         col_save, col_back2, col_new = st.columns([2, 1, 1])
 
