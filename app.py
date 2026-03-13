@@ -3001,6 +3001,20 @@ def main():
 # VALUATION TAB — helper (called inside main())
 # ─────────────────────────────────────────────────────────────────────────────
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_fetch_yf(ticker: str) -> dict:
+    """Cache Yahoo Finance fetch result for 1 hour to avoid rate-limits."""
+    from dcf_engine import fetch_yf_financials
+    return fetch_yf_financials(ticker)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_fetch_multiples(ticker: str) -> dict:
+    """Cache peer multiples fetch for 1 hour to avoid rate-limits."""
+    from dcf_engine import fetch_multiples
+    return fetch_multiples(ticker)
+
+
 def _render_valuation_tab():
     """Render the 💎 Valuation tab — 3-step DCF Wizard"""
     from dcf_engine import DCFInputs, DCFOutputs, run_dcf, run_scenarios, sensitivity_table, reverse_dcf, reverse_dcf_single_stage, fetch_multiples, implied_value_from_multiples
@@ -3089,8 +3103,7 @@ def _val_wizard():
             if yf_col2.button("⬇️ ดึงข้อมูล", use_container_width=True, key="btn_yf_fetch"):
                 if yf_ticker_input.strip():
                     with st.spinner("กำลังดึงข้อมูลจาก Yahoo Finance…"):
-                        from dcf_engine import fetch_yf_financials
-                        yf_data = fetch_yf_financials(yf_ticker_input.strip())
+                        yf_data = _cached_fetch_yf(yf_ticker_input.strip())
                     if "_error" in yf_data:
                         st.error(f"❌ {yf_data['_error']}")
                     else:
@@ -3454,7 +3467,7 @@ def _val_wizard():
                 with st.spinner("กำลังดึงข้อมูลจาก Yahoo Finance…"):
                     peer_data_list = []
                     for pt in tickers_list[:6]:   # max 6 peers
-                        pd_row = fetch_multiples(pt)
+                        pd_row = _cached_fetch_multiples(pt)
                         peer_data_list.append(pd_row)
                 st.session_state["peer_multiples"] = peer_data_list
 

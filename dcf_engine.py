@@ -593,11 +593,20 @@ def fetch_yf_financials(ticker: str) -> dict:
     except ImportError:
         return {"_error": "yfinance ไม่ได้ติดตั้ง — pip install yfinance"}
 
-    try:
-        tk   = yf.Ticker(ticker.strip())
-        info = tk.info or {}
-    except Exception as e:
-        return {"_error": f"ดึงข้อมูลไม่ได้: {e}"}
+    import time as _time
+    info = {}
+    last_err = ""
+    for _attempt in range(3):
+        try:
+            tk   = yf.Ticker(ticker.strip())
+            info = tk.info or {}
+            if info:
+                break
+        except Exception as e:
+            last_err = str(e)
+            _time.sleep(2 ** _attempt)   # 1s, 2s, 4s backoff
+    if not info:
+        return {"_error": f"ดึงข้อมูลไม่ได้: {last_err or 'ไม่พบข้อมูล (Yahoo Finance rate-limit — ลองใหม่อีกครั้ง)'}"}
 
     result = {}
 
@@ -710,14 +719,20 @@ def fetch_multiples(ticker: str) -> dict:
     except ImportError:
         return {"ticker": ticker.upper(), "_error": "yfinance ไม่ได้ติดตั้ง"}
 
-    try:
-        tk   = yf.Ticker(ticker.strip())
-        info = tk.info or {}
-    except Exception as e:
-        return {"ticker": ticker.upper(), "_error": str(e)}
-
+    import time as _time
+    info = {}
+    last_err = ""
+    for _attempt in range(3):
+        try:
+            tk   = yf.Ticker(ticker.strip())
+            info = tk.info or {}
+            if info:
+                break
+        except Exception as e:
+            last_err = str(e)
+            _time.sleep(2 ** _attempt)
     if not info:
-        return {"ticker": ticker.upper(), "_error": "ไม่พบข้อมูล"}
+        return {"ticker": ticker.upper(), "_error": last_err or "ไม่พบข้อมูล (ลองใหม่อีกครั้ง)"}
 
     out: dict = {}
     out["ticker"]       = ticker.strip().upper()
