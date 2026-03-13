@@ -760,11 +760,12 @@ def main():
     st.title("📈 Investment Dashboard")
     st.caption(f"Last session: {datetime.now().strftime('%d %b %Y %H:%M')}")
 
-    tab_exec, tab_input, tab_chart, tab_adv = st.tabs([
+    tab_exec, tab_input, tab_chart, tab_adv, tab_val = st.tabs([
         "🏠  ภาพรวม",
         "✏️  พอร์ตของฉัน",
         "📊  Chart & Analysis",
         "🚀  Advanced",
+        "💎  Valuation",
     ])
     # Hidden tabs — preserved for future use
     tab_port  = None  # hidden below with if False:
@@ -2988,6 +2989,638 @@ def main():
                         fig_hist.update_xaxes(gridcolor="#2a2a3e")
                         fig_hist.update_yaxes(gridcolor="#2a2a3e")
                         st.plotly_chart(fig_hist, use_container_width=True)
+
+    # ════════════════════════════════════════════════════════════════════
+    # TAB VAL — 💎 Valuation (DCF / FCFF Wizard)
+    # ════════════════════════════════════════════════════════════════════
+    with tab_val:
+        _render_valuation_tab()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VALUATION TAB — helper (called inside main())
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_valuation_tab():
+    """Render the 💎 Valuation tab — 3-step DCF Wizard"""
+    from dcf_engine import DCFInputs, DCFOutputs, run_dcf, run_scenarios, sensitivity_table
+    from db_gsheets import (
+        val_save, val_load, val_load_one, val_update, val_delete,
+        scenario_save, scenario_load, scenario_delete, scenario_delete_all,
+    )
+
+    st.markdown("## 💎 DCF Valuation")
+    st.caption("ประเมินมูลค่าหุ้นด้วย Free Cash Flow to Firm (FCFF) — Damodaran model")
+
+    # ── Session state init ────────────────────────────────────────────────────
+    if "val_step"      not in st.session_state: st.session_state["val_step"]      = 1
+    if "val_inputs"    not in st.session_state: st.session_state["val_inputs"]    = {}
+    if "val_result"    not in st.session_state: st.session_state["val_result"]    = None
+    if "val_edit_id"   not in st.session_state: st.session_state["val_edit_id"]   = None
+    if "val_view_mode" not in st.session_state: st.session_state["val_view_mode"] = "wizard"
+
+    # ── Top-level view toggle ─────────────────────────────────────────────────
+    col_mode1, col_mode2, _ = st.columns([1, 1, 4])
+    if col_mode1.button("➕ Valuation ใหม่", use_container_width=True,
+                        type="primary" if st.session_state["val_view_mode"] == "wizard" else "secondary"):
+        st.session_state["val_view_mode"] = "wizard"
+        st.session_state["val_step"]      = 1
+        st.session_state["val_edit_id"]   = None
+        st.rerun()
+    if col_mode2.button("📋 รายการที่บันทึก", use_container_width=True,
+                        type="primary" if st.session_state["val_view_mode"] == "list" else "secondary"):
+        st.session_state["val_view_mode"] = "list"
+        st.rerun()
+
+    st.divider()
+
+    # ════════════════════════════════════════════════════════════════════
+    # VIEW: รายการ Valuations ที่บันทึก
+    # ════════════════════════════════════════════════════════════════════
+    if st.session_state["val_view_mode"] == "list":
+        _val_list_view()
+        return
+
+    # ════════════════════════════════════════════════════════════════════
+    # VIEW: Wizard (3 ขั้นตอน)
+    # ════════════════════════════════════════════════════════════════════
+    _val_wizard()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WIZARD — 3 steps
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _val_wizard():
+    from dcf_engine import DCFInputs, DCFOutputs, run_dcf, run_scenarios, sensitivity_table
+
+    step = st.session_state["val_step"]
+
+    # ── Step breadcrumb ───────────────────────────────────────────────────────
+    step_labels = {1: "1️⃣  บริษัท & ตัวเลขพื้นฐาน", 2: "2️⃣  สมมติฐาน & ต้นทุนทุน", 3: "3️⃣  ผลการประเมิน"}
+    cols_steps  = st.columns(3)
+    for i, (s, lbl) in enumerate(step_labels.items(), start=1):
+        with cols_steps[i - 1]:
+            if s == step:
+                st.markdown(f"**:violet[{lbl}]**")
+            elif s < step:
+                st.markdown(f"✅ ~~{lbl}~~")
+            else:
+                st.markdown(f":gray[{lbl}]")
+    st.divider()
+
+    saved = st.session_state.get("val_inputs", {})
+
+    # ════════════════════════════════════════════════════════════════════
+    # STEP 1 — Company info & Base financials
+    # ════════════════════════════════════════════════════════════════════
+    if step == 1:
+        st.markdown("### 🏢 ข้อมูลบริษัทและตัวเลขปีล่าสุด")
+
+        # ── Yahoo Finance Auto-fill ───────────────────────────────────────────
+        with st.expander("🔍 Auto-fill จาก Yahoo Finance", expanded=True):
+            yf_col1, yf_col2 = st.columns([3, 1])
+            yf_ticker_input  = yf_col1.text_input(
+                "กรอก Ticker เพื่อดึงข้อมูลอัตโนมัติ",
+                value=saved.get("ticker", ""),
+                placeholder="เช่น AAPL, GOOGL, PTT.BK, 2380.SR",
+                key="yf_ticker_fetch",
+            )
+            if yf_col2.button("⬇️ ดึงข้อมูล", use_container_width=True, key="btn_yf_fetch"):
+                if yf_ticker_input.strip():
+                    with st.spinner("กำลังดึงข้อมูลจาก Yahoo Finance…"):
+                        from dcf_engine import fetch_yf_financials
+                        yf_data = fetch_yf_financials(yf_ticker_input.strip())
+                    if "_error" in yf_data:
+                        st.error(f"❌ {yf_data['_error']}")
+                    else:
+                        # Merge into val_inputs (only non-private keys)
+                        clean = {k: v for k, v in yf_data.items() if not k.startswith("_")}
+                        st.session_state["val_inputs"].update(clean)
+                        hint = yf_data.get("_growth_hint")
+                        if hint is not None:
+                            st.session_state["val_inputs"]["revenue_growth_yr1"] = round(max(0.02, hint), 4)
+                        # Auto-correct currency dropdown
+                        fetched_cur = clean.get("currency", "USD")
+                        if fetched_cur not in ["USD","THB","SAR","EUR","GBP","JPY","SGD","HKD"]:
+                            fetched_cur = "USD"
+                        st.session_state["val_inputs"]["currency"] = fetched_cur
+                        st.success(
+                            f"✅ ดึงข้อมูล **{clean.get('company_name','')}** สำเร็จ  "
+                            f"({clean.get('currency','')}  Revenue: "
+                            f"{clean.get('revenue_base', 0):,.0f}M)"
+                        )
+                        st.rerun()
+                else:
+                    st.warning("กรุณากรอก Ticker ก่อน")
+
+        # reload saved after possible update from YF button
+        saved = st.session_state.get("val_inputs", {})
+
+        c1, c2, c3 = st.columns([2, 1, 1])
+        company_name = c1.text_input("ชื่อบริษัท",   value=saved.get("company_name", ""),  placeholder="เช่น Apple Inc.")
+        ticker       = c2.text_input("Ticker Symbol", value=saved.get("ticker", ""),        placeholder="เช่น AAPL")
+        _cur_opts    = ["USD","THB","SAR","EUR","GBP","JPY","SGD","HKD"]
+        _cur_val     = saved.get("currency","USD")
+        _cur_idx     = _cur_opts.index(_cur_val) if _cur_val in _cur_opts else 0
+        currency     = c3.selectbox("สกุลเงิน", _cur_opts, index=_cur_idx)
+
+        st.markdown("#### 💰 ตัวเลขปีล่าสุด (Base Year)")
+        st.caption("กรอกตัวเลขจาก Annual Report ปีล่าสุด  (หน่วย: ล้าน)")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            revenue_base     = st.number_input("Revenue (ล้าน)",    value=float(saved.get("revenue_base",      10_000.0)), min_value=0.01,   step=100.0,  format="%.2f",
+                                               help="รายได้รวมปีล่าสุด")
+            ebit_margin_base = st.slider("EBIT Margin ปีล่าสุด (%)", 0.0, 50.0,
+                                         float(saved.get("ebit_margin_base", 0.10)) * 100, 0.5,
+                                         format="%.1f%%") / 100
+            tax_rate         = st.slider("Tax Rate (%)", 0.0, 40.0,
+                                         float(saved.get("tax_rate", 0.20)) * 100, 0.5,
+                                         format="%.1f%%") / 100
+        with col2:
+            net_debt          = st.number_input("Net Debt (ล้าน)",         value=float(saved.get("net_debt", 0.0)),            step=100.0, format="%.2f",
+                                                help="Net Debt = หนี้สิน − เงินสด (ใส่ค่าลบถ้า net cash)")
+            minority_interest = st.number_input("Minority Interest (ล้าน)", value=float(saved.get("minority_interest", 0.0)),   step=10.0,  format="%.2f")
+            shares_outstanding = st.number_input("หุ้นทั้งหมด (ล้านหุ้น)",  value=float(saved.get("shares_outstanding", 100.0)), min_value=0.01, step=10.0,  format="%.2f")
+
+        st.markdown("---")
+        if st.button("ถัดไป →  ขั้นตอนที่ 2", type="primary", use_container_width=True):
+            if not company_name.strip():
+                st.error("กรุณากรอกชื่อบริษัท")
+                return
+            if revenue_base <= 0:
+                st.error("Revenue ต้องมากกว่า 0")
+                return
+            st.session_state["val_inputs"].update({
+                "company_name":      company_name.strip(),
+                "ticker":            ticker.strip().upper(),
+                "currency":          currency,
+                "revenue_base":      revenue_base,
+                "ebit_margin_base":  ebit_margin_base,
+                "tax_rate":          tax_rate,
+                "net_debt":          net_debt,
+                "minority_interest": minority_interest,
+                "shares_outstanding": shares_outstanding,
+            })
+            st.session_state["val_step"] = 2
+            st.rerun()
+
+    # ════════════════════════════════════════════════════════════════════
+    # STEP 2 — Growth assumptions & WACC
+    # ════════════════════════════════════════════════════════════════════
+    elif step == 2:
+        st.markdown("### 📈 สมมติฐานการเติบโตและต้นทุนทุน")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("#### 🚀 การเติบโตของรายได้")
+            growth_yr1   = st.slider("Revenue Growth ปีที่ 1 (%)",   -10.0, 50.0,
+                                     float(saved.get("revenue_growth_yr1",   0.12)) * 100, 0.5, format="%.1f%%") / 100
+            growth_final = st.slider("Revenue Growth ปีสุดท้าย (%)", -5.0, 30.0,
+                                     float(saved.get("revenue_growth_final", 0.05)) * 100, 0.5, format="%.1f%%") / 100
+            growth_years = st.slider("จำนวนปีที่คาดการณ์",  3, 15,
+                                     int(saved.get("growth_years", 10)), 1)
+
+            st.markdown("#### 📊 Margin & Reinvestment")
+            ebit_target     = st.slider("EBIT Margin เป้าหมาย (%)",  0.0, 50.0,
+                                        float(saved.get("ebit_margin_target", 0.15)) * 100, 0.5, format="%.1f%%") / 100
+            sales_to_cap    = st.number_input("Sales-to-Capital Ratio", value=float(saved.get("sales_to_capital", 1.5)),
+                                               min_value=0.1, max_value=10.0, step=0.1, format="%.2f",
+                                               help="รายได้ต่อทุนที่ลงทุน ยิ่งสูง = ต้องการ Capex น้อย")
+
+        with col2:
+            st.markdown("#### 💸 ต้นทุนทุน (WACC)")
+            wacc         = st.slider("WACC (%)",    3.0, 20.0,
+                                     float(saved.get("wacc", 0.10)) * 100, 0.25, format="%.2f%%") / 100
+
+            st.markdown("#### 🏁 Terminal Value")
+            term_growth  = st.slider("Terminal Growth Rate (%)", 0.0, 5.0,
+                                     float(saved.get("terminal_growth", 0.025)) * 100, 0.25, format="%.2f%%") / 100
+            term_roic    = st.slider("Terminal ROIC (%)", 3.0, 30.0,
+                                     float(saved.get("terminal_roic", 0.12)) * 100, 0.5, format="%.1f%%") / 100
+
+            st.markdown("#### 🛡️ Margin of Safety")
+            mos          = st.slider("Margin of Safety (%)", 0.0, 50.0,
+                                     float(saved.get("margin_of_safety", 0.20)) * 100, 5.0, format="%.0f%%") / 100
+
+        # ── Preview ──────────────────────────────────────────────────────────
+        preview_inp = DCFInputs(
+            **{**saved,
+               "revenue_growth_yr1":   growth_yr1,
+               "revenue_growth_final": growth_final,
+               "growth_years":         growth_years,
+               "ebit_margin_target":   ebit_target,
+               "sales_to_capital":     sales_to_cap,
+               "wacc":                 wacc,
+               "terminal_growth":      term_growth,
+               "terminal_roic":        term_roic,
+               "margin_of_safety":     mos,
+            }
+        )
+        preview_out = run_dcf(preview_inp)
+        st.divider()
+        if preview_out.error:
+            st.error(f"⚠️ {preview_out.error}")
+        else:
+            cur = saved.get("currency", "USD")
+            pm1, pm2, pm3, pm4 = st.columns(4)
+            pm1.metric("📌 Intrinsic Value/Share",
+                       f"{preview_out.intrinsic_per_share:,.2f} {cur}")
+            pm2.metric(f"🛡️ MOS Price (−{mos:.0%})",
+                       f"{preview_out.mos_price:,.2f} {cur}")
+            pm3.metric("🏛️ Enterprise Value",
+                       f"{preview_out.enterprise_value:,.0f}M")
+            pm4.metric("📊 PV Terminal / Total",
+                       f"{preview_out.pv_terminal / preview_out.enterprise_value * 100:.0f}%" if preview_out.enterprise_value else "—")
+
+        st.markdown("---")
+        col_back, col_next = st.columns(2)
+        if col_back.button("← ย้อนกลับ", use_container_width=True):
+            st.session_state["val_step"] = 1
+            st.rerun()
+        if col_next.button("คำนวณและดูผล →", type="primary", use_container_width=True):
+            if wacc <= term_growth:
+                st.error("WACC ต้องมากกว่า Terminal Growth Rate")
+                return
+            st.session_state["val_inputs"].update({
+                "revenue_growth_yr1":   growth_yr1,
+                "revenue_growth_final": growth_final,
+                "growth_years":         growth_years,
+                "ebit_margin_target":   ebit_target,
+                "sales_to_capital":     sales_to_cap,
+                "wacc":                 wacc,
+                "terminal_growth":      term_growth,
+                "terminal_roic":        term_roic,
+                "margin_of_safety":     mos,
+            })
+            # คำนวณ Base + Scenarios
+            final_inp = DCFInputs.from_dict(st.session_state["val_inputs"])
+            st.session_state["val_result"] = {
+                "inp":       final_inp,
+                "base":      run_dcf(final_inp),
+                "scenarios": run_scenarios(final_inp),
+            }
+            st.session_state["val_step"] = 3
+            st.rerun()
+
+    # ════════════════════════════════════════════════════════════════════
+    # STEP 3 — Results
+    # ════════════════════════════════════════════════════════════════════
+    elif step == 3:
+        result = st.session_state.get("val_result")
+        if not result:
+            st.warning("ไม่มีผลการคำนวณ — กลับไปขั้นตอนที่ 1")
+            st.session_state["val_step"] = 1
+            st.rerun()
+            return
+
+        inp: DCFInputs  = result["inp"]
+        out: DCFOutputs = result["base"]
+        scenarios: dict = result["scenarios"]
+        cur = inp.currency
+
+        if out.error:
+            st.error(f"❌ {out.error}")
+            if st.button("← แก้ไข"):
+                st.session_state["val_step"] = 2
+                st.rerun()
+            return
+
+        # ── Hero metrics ──────────────────────────────────────────────────────
+        st.markdown(f"### 📊 ผลการประเมิน — **{inp.company_name}** ({inp.ticker})")
+        h1, h2, h3, h4 = st.columns(4)
+        h1.metric("💎 Intrinsic Value/Share",   f"{out.intrinsic_per_share:,.2f} {cur}",
+                  help="มูลค่าที่แท้จริงต่อหุ้นจากโมเดล DCF")
+        h2.metric(f"🛡️ MOS Price (−{inp.margin_of_safety:.0%})",
+                  f"{out.mos_price:,.2f} {cur}",
+                  help="ราคาเป้าหมายหลังหัก Margin of Safety — ควรซื้อถ้าราคาต่ำกว่านี้")
+        h3.metric("🏛️ Enterprise Value",        f"{out.enterprise_value:,.0f}M {cur}")
+        h4.metric("💼 Equity Value",            f"{out.equity_value:,.0f}M {cur}")
+
+        st.divider()
+
+        # ── Scenario comparison ───────────────────────────────────────────────
+        st.markdown("#### 🎯 เปรียบเทียบ 3 Scenarios")
+        sc_cols = st.columns(3)
+        sc_colors = {"Bull": "#26a69a", "Base": "#7c3aed", "Bear": "#ef5350"}
+        sc_icons  = {"Bull": "🐂", "Base": "⚖️", "Bear": "🐻"}
+        for sc_col, (sc_name, sc_out) in zip(sc_cols, [
+            ("Bull", scenarios.get("Bull")),
+            ("Base", scenarios.get("Base")),
+            ("Bear", scenarios.get("Bear")),
+        ]):
+            with sc_col:
+                color = sc_colors.get(sc_name, "#888")
+                icon  = sc_icons.get(sc_name, "")
+                if sc_out and not sc_out.error:
+                    st.markdown(
+                        f"""<div style="border:1px solid {color}; border-radius:12px; padding:16px; text-align:center">
+                        <div style="font-size:1.5rem">{icon} {sc_name}</div>
+                        <div style="color:{color}; font-size:2rem; font-weight:700">
+                            {sc_out.intrinsic_per_share:,.2f}</div>
+                        <div style="color:#aaa; font-size:0.8rem">{cur}/share (Intrinsic)</div>
+                        <div style="color:{color}; font-size:1.2rem; margin-top:6px">
+                            MOS: {sc_out.mos_price:,.2f} {cur}</div>
+                        </div>""",
+                        unsafe_allow_html=True
+                    )
+                else:
+                    err_msg = sc_out.error if sc_out else "N/A"
+                    st.error(f"{sc_name}: {err_msg}")
+
+        st.divider()
+
+        # ── Year-by-year projection table ─────────────────────────────────────
+        with st.expander("📋 ตารางคาดการณ์รายปี", expanded=False):
+            proj_df = pd.DataFrame({
+                "ปี":             out.years,
+                f"Revenue ({cur}M)": [f"{v:,.0f}" for v in out.revenues],
+                "EBIT Margin":    [f"{v:.1%}" for v in out.ebit_margins],
+                f"NOPAT ({cur}M)":   [f"{v:,.0f}" for v in out.nopats],
+                f"Reinvest ({cur}M)":[f"{v:,.0f}" for v in out.reinvestments],
+                f"FCFF ({cur}M)":    [f"{v:,.0f}" for v in out.fcffs],
+                "Discount Factor":[f"{v:.4f}" for v in out.discount_factors],
+                f"PV FCFF ({cur}M)": [f"{v:,.0f}" for v in out.pv_fcffs],
+            })
+            st.dataframe(proj_df, use_container_width=True, hide_index=True)
+
+            # Terminal summary
+            st.markdown(
+                f"**Terminal FCFF:** {out.terminal_fcff:,.0f}M {cur} &nbsp;|&nbsp;"
+                f"**Terminal Value:** {out.terminal_value:,.0f}M {cur} &nbsp;|&nbsp;"
+                f"**PV Terminal:** {out.pv_terminal:,.0f}M {cur}"
+            )
+
+        # ── Waterfall bar chart ───────────────────────────────────────────────
+        with st.expander("📊 Waterfall — EV Bridge", expanded=True):
+            import plotly.graph_objects as go_val
+            wf_x = ["PV of FCFFs", "PV Terminal Value", "Enterprise Value",
+                    "− Net Debt", "− Minority", "Equity Value"]
+            wf_base  = [0, out.pv_fcff_sum, 0, out.equity_value + inp.minority_interest + inp.net_debt, out.equity_value + inp.minority_interest, 0]
+            wf_vals  = [out.pv_fcff_sum, out.pv_terminal, 0,
+                        -inp.net_debt, -inp.minority_interest, 0]
+            wf_total = [False, False, True, False, False, True]
+            wf_color = ["#7c3aed", "#26a69a", "#5c6bc0",
+                        "#ef5350", "#ff7043", "#4caf50"]
+
+            fig_wf = go_val.Figure(go_val.Waterfall(
+                orientation="v",
+                measure = ["relative","relative","total","relative","relative","total"],
+                x       = wf_x,
+                y       = [out.pv_fcff_sum, out.pv_terminal, None,
+                           -inp.net_debt, -inp.minority_interest, None],
+                connector={"line": {"color": "#444"}},
+                increasing={"marker": {"color": "#26a69a"}},
+                decreasing={"marker": {"color": "#ef5350"}},
+                totals    ={"marker": {"color": "#7c3aed"}},
+            ))
+            fig_wf.update_layout(
+                title=f"Enterprise Value → Equity Value Bridge ({cur}M)",
+                template="plotly_dark", height=360,
+                paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+                yaxis_title=f"{cur} Million",
+            )
+            st.plotly_chart(fig_wf, use_container_width=True)
+
+        # ── Sensitivity table ─────────────────────────────────────────────────
+        with st.expander("🔍 Sensitivity: WACC × Terminal Growth", expanded=False):
+            wacc_range = [inp.wacc - 0.02, inp.wacc - 0.01, inp.wacc, inp.wacc + 0.01, inp.wacc + 0.02]
+            tg_range   = [inp.terminal_growth - 0.005, inp.terminal_growth, inp.terminal_growth + 0.005,
+                          inp.terminal_growth + 0.01]
+            wacc_range = [max(0.01, w) for w in wacc_range]
+            tg_range   = [max(0.005, t) for t in tg_range]
+
+            sens = sensitivity_table(inp, "wacc", wacc_range, "terminal_growth", tg_range)
+            tg_labels  = [f"{t:.2%}" for t in sens["col_values"]]
+            wacc_labels = [f"{w:.2%}" for w in sens["row_values"]]
+
+            sens_df = pd.DataFrame(
+                sens["table"],
+                index=pd.Index(wacc_labels, name="WACC \\ TG"),
+                columns=tg_labels,
+            )
+            # Color-code cells vs MOS price
+            def _sens_style(val):
+                if val is None: return ""
+                mos_p = out.mos_price
+                if val >= mos_p * 1.2:  return "background-color: #1b5e20; color: white"
+                if val >= mos_p:        return "background-color: #2e7d32; color: white"
+                if val >= mos_p * 0.8:  return "background-color: #f57f17; color: black"
+                return "background-color: #b71c1c; color: white"
+
+            st.dataframe(
+                sens_df.style.applymap(_sens_style).format("{:.2f}"),
+                use_container_width=True,
+            )
+            st.caption(
+                f"🟢 เขียว = ราคาสูงกว่า MOS Price ({out.mos_price:.2f} {cur}) "
+                f"| 🟠 ส้ม = ใกล้ MOS | 🔴 แดง = ต่ำกว่า MOS"
+            )
+
+        # ── Tornado chart ─────────────────────────────────────────────────────
+        with st.expander("🌪️ Tornado Chart — ปัจจัยที่มีผลกับมูลค่าสูงสุด", expanded=False):
+            from dcf_engine import tornado_data
+            tornado_rows = tornado_data(inp, metric="intrinsic_per_share")
+            import plotly.graph_objects as go_t
+            labels_t = [r["label"]  for r in tornado_rows]
+            lows_t   = [r["low"]    for r in tornado_rows]
+            highs_t  = [r["high"]   for r in tornado_rows]
+            base_t   = out.intrinsic_per_share
+
+            fig_t = go_t.Figure()
+            fig_t.add_trace(go_t.Bar(
+                y=labels_t, x=[h - base_t for h in highs_t],
+                base=base_t,
+                orientation="h",
+                name="High",
+                marker_color="#26a69a",
+            ))
+            fig_t.add_trace(go_t.Bar(
+                y=labels_t, x=[l - base_t for l in lows_t],
+                base=base_t,
+                orientation="h",
+                name="Low",
+                marker_color="#ef5350",
+            ))
+            fig_t.add_vline(x=base_t, line_dash="dash", line_color="#ffd54f",
+                            annotation_text=f"Base {base_t:.2f}", annotation_position="top right")
+            fig_t.update_layout(
+                title=f"Sensitivity Tornado — Intrinsic Value/Share ({cur})",
+                barmode="overlay",
+                template="plotly_dark", height=420,
+                paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+                xaxis_title=f"Intrinsic Value ({cur})",
+                yaxis={"autorange": "reversed"},
+                legend={"orientation": "h", "yanchor": "bottom", "y": 1.02},
+            )
+            fig_t.update_xaxes(gridcolor="#2a2a3e")
+            fig_t.update_yaxes(gridcolor="#2a2a3e")
+            st.plotly_chart(fig_t, use_container_width=True)
+            st.caption("แต่ละแท่งแสดงผลกระทบเมื่อปรับพารามิเตอร์ ±ขั้นตอนเดียว — แท่งกว้าง = ความเสี่ยงสูง")
+
+        # ── Export CSV ────────────────────────────────────────────────────────
+        with st.expander("⬇️ Export ผลการประเมิน", expanded=False):
+            from dcf_engine import export_to_csv
+            csv_str = export_to_csv(inp, out, scenarios)
+            import io as _io
+            st.download_button(
+                label    = "⬇️ Download CSV",
+                data     = csv_str,
+                file_name= f"DCF_{inp.ticker}_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime     = "text/csv",
+                use_container_width=True,
+            )
+            st.caption("ไฟล์ CSV มีตาราง projection รายปี + ผล scenarios + inputs ทั้งหมด")
+
+        st.divider()
+
+        # ── Save button ───────────────────────────────────────────────────────
+        st.markdown("#### 💾 บันทึกการประเมินนี้")
+        save_notes = st.text_area("หมายเหตุ (ถ้ามี)", placeholder="เช่น ใช้ตัวเลข FY2024, สมมติว่า...", height=80)
+        col_save, col_back2, col_new = st.columns([2, 1, 1])
+
+        if col_save.button("💾 บันทึกลง Google Sheets", type="primary", use_container_width=True):
+            try:
+                import json as _j
+                val_id = val_save(
+                    company_name  = inp.company_name,
+                    ticker        = inp.ticker,
+                    currency      = inp.currency,
+                    date_valued   = datetime.now().strftime("%Y-%m-%d"),
+                    inputs        = inp.to_dict(),
+                    outputs       = out.to_dict(),
+                    notes         = save_notes,
+                )
+                # บันทึก 3 scenarios ด้วย
+                for sc_name, sc_out in scenarios.items():
+                    if not sc_out.error:
+                        # หา inputs ของ scenario นั้น
+                        from dcf_engine import _SCENARIO_PRESETS, DCFInputs as _DI
+                        deltas    = _SCENARIO_PRESETS.get(sc_name, {})
+                        sc_d      = inp.to_dict()
+                        for k, dv in deltas.items():
+                            if k in sc_d:
+                                sc_d[k] = sc_d[k] + dv
+                        scenario_save(val_id, sc_name, sc_d, sc_out.to_dict())
+
+                st.success(f"✅ บันทึกแล้ว (ID: {val_id})")
+                st.session_state["val_edit_id"] = val_id
+            except Exception as _e:
+                st.error(f"บันทึกไม่สำเร็จ: {_e}")
+
+        if col_back2.button("← แก้ไขสมมติฐาน", use_container_width=True):
+            st.session_state["val_step"] = 2
+            st.rerun()
+
+        if col_new.button("🆕 Valuation ใหม่", use_container_width=True):
+            st.session_state["val_step"]   = 1
+            st.session_state["val_inputs"] = {}
+            st.session_state["val_result"] = None
+            st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LIST VIEW — saved valuations
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _val_list_view():
+    from db_gsheets import val_load, val_load_one, val_delete, scenario_load
+    from dcf_engine import DCFInputs, DCFOutputs
+
+    st.markdown("### 📋 รายการ Valuation ที่บันทึกไว้")
+
+    try:
+        df = val_load()
+    except Exception as e:
+        st.error(f"โหลดข้อมูลไม่ได้: {e}")
+        return
+
+    if df.empty:
+        st.info("ยังไม่มี valuation ที่บันทึก — กดปุ่ม **➕ Valuation ใหม่** เพื่อเริ่ม")
+        return
+
+    # ── Table list ────────────────────────────────────────────────────────────
+    for _, row in df.iterrows():
+        import json as _j
+        val_id   = str(row.get("id", ""))
+        name     = str(row.get("company_name", ""))
+        ticker   = str(row.get("ticker", ""))
+        cur      = str(row.get("currency", ""))
+        dt_val   = str(row.get("date_valued", ""))
+        notes    = str(row.get("notes", ""))
+
+        try:
+            out_d = _j.loads(row.get("outputs_json") or "{}")
+            iv    = float(out_d.get("intrinsic_per_share", 0))
+            mos   = float(out_d.get("mos_price", 0))
+            ev    = float(out_d.get("enterprise_value", 0))
+        except Exception:
+            iv, mos, ev = 0, 0, 0
+
+        with st.expander(f"**{name}** ({ticker}) — {dt_val}", expanded=False):
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Intrinsic/Share",    f"{iv:,.2f} {cur}")
+            m2.metric("MOS Price",          f"{mos:,.2f} {cur}")
+            m3.metric("Enterprise Value",   f"{ev:,.0f}M")
+            m4.metric("Date",               dt_val)
+
+            if notes:
+                st.caption(f"📝 {notes}")
+
+            # Scenarios sub-section
+            sc_list = scenario_load(val_id)
+            if sc_list:
+                sc_data = {s["scenario_name"]: s for s in sc_list}
+                sc_names = ["Bull", "Base", "Bear"]
+                sc_cols  = st.columns(3)
+                sc_icons = {"Bull": "🐂", "Base": "⚖️", "Bear": "🐻"}
+                sc_colors = {"Bull": "#26a69a", "Base": "#7c3aed", "Bear": "#ef5350"}
+                for scol, sc_name in zip(sc_cols, sc_names):
+                    sc = sc_data.get(sc_name)
+                    if sc:
+                        try:
+                            sc_iv  = float(sc["outputs"].get("intrinsic_per_share", 0))
+                            sc_mos = float(sc["outputs"].get("mos_price", 0))
+                            color  = sc_colors.get(sc_name, "#888")
+                            icon   = sc_icons.get(sc_name, "")
+                            scol.markdown(
+                                f"<div style='text-align:center; color:{color}'>"
+                                f"<b>{icon} {sc_name}</b><br/>"
+                                f"<span style='font-size:1.3rem;font-weight:700'>{sc_iv:,.2f}</span> {cur}/share<br/>"
+                                f"MOS: {sc_mos:,.2f}</div>",
+                                unsafe_allow_html=True
+                            )
+                        except Exception:
+                            pass
+
+            # Action buttons
+            ba1, ba2 = st.columns([1, 1])
+            if ba1.button("✏️ แก้ไข / ดูรายละเอียด", key=f"edit_{val_id}", use_container_width=True):
+                # โหลด inputs กลับมาใส่ Wizard
+                try:
+                    rec = val_load_one(val_id)
+                    if rec:
+                        st.session_state["val_inputs"]    = rec["inputs"]
+                        st.session_state["val_edit_id"]   = val_id
+                        st.session_state["val_step"]      = 3
+                        st.session_state["val_result"]    = {
+                            "inp":       DCFInputs.from_dict(rec["inputs"]),
+                            "base":      DCFOutputs.from_dict(rec["outputs"]),
+                            "scenarios": {},
+                        }
+                        st.session_state["val_view_mode"] = "wizard"
+                        st.rerun()
+                except Exception as _err:
+                    st.error(f"โหลดไม่สำเร็จ: {_err}")
+
+            if ba2.button("🗑️ ลบ", key=f"del_{val_id}", use_container_width=True):
+                try:
+                    val_delete(val_id)
+                    st.success(f"ลบ {name} แล้ว")
+                    st.rerun()
+                except Exception as _err:
+                    st.error(f"ลบไม่สำเร็จ: {_err}")
 
 
 # ─── Entry Point ─────────────────────────────────────────────────────────────

@@ -41,23 +41,30 @@ except ImportError:
     GSHEETS_OK = False
 
 # ── Worksheet names ──────────────────────────────────────────────────────────
-WS_DIARY    = "diary"
-WS_ALERTS   = "alerts"
-WS_WATCHLIST= "watchlist"
-WS_PORTFOLIO= "portfolio"
-WS_TRADES   = "planned_trades"
-WS_ETF      = "etf_holdings"
-WS_REBAL    = "rebalancing"
+WS_DIARY         = "diary"
+WS_ALERTS        = "alerts"
+WS_WATCHLIST     = "watchlist"
+WS_PORTFOLIO     = "portfolio"
+WS_TRADES        = "planned_trades"
+WS_ETF           = "etf_holdings"
+WS_REBAL         = "rebalancing"
+WS_VALUATIONS    = "valuations"
+WS_VAL_SCENARIOS = "val_scenarios"
 
 # ── Headers ต่อ sheet (ต้องตรงกับ Column A ใน Spreadsheet) ──────────────────
 HEADERS = {
-    WS_DIARY:     ["id","ticker","entry_date","entry_type","price_ref","note","created_at"],
-    WS_ALERTS:    ["id","ticker","alert_type","price","note","active","created_at","triggered_at"],
-    WS_WATCHLIST: ["id","ticker","target_price","note","added_at"],
-    WS_PORTFOLIO: ["id","ticker","qty","avg_cost"],
-    WS_TRADES:    ["id","ticker","support_price","usd_amount","shares","created_at"],
-    WS_ETF:       ["etf_ticker","symbol","weight_pct"],
-    WS_REBAL:     ["ticker","target_pct"],
+    WS_DIARY:         ["id","ticker","entry_date","entry_type","price_ref","note","created_at"],
+    WS_ALERTS:        ["id","ticker","alert_type","price","note","active","created_at","triggered_at"],
+    WS_WATCHLIST:     ["id","ticker","target_price","note","added_at"],
+    WS_PORTFOLIO:     ["id","ticker","qty","avg_cost"],
+    WS_TRADES:        ["id","ticker","support_price","usd_amount","shares","created_at"],
+    WS_ETF:           ["etf_ticker","symbol","weight_pct"],
+    WS_REBAL:         ["ticker","target_pct"],
+    WS_VALUATIONS:    ["id","company_name","ticker","currency",
+                       "date_valued","inputs_json","outputs_json",
+                       "notes","created_at"],
+    WS_VAL_SCENARIOS: ["id","valuation_id","scenario_name",
+                       "inputs_json","outputs_json","created_at"],
 }
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -462,6 +469,189 @@ def rebalancing_save(items: list):
             rows.append([tk, pct])
     if rows:
         ws.append_rows(rows, value_input_option="USER_ENTERED")
+    _ws_to_df.clear()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VALUATION helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+import json as _json
+
+
+def val_save(
+    company_name: str,
+    ticker: str,
+    currency: str,
+    date_valued: str,
+    inputs: dict,
+    outputs: dict,
+    notes: str = "",
+) -> str:
+    """
+    บันทึก valuation ใหม่  คืน id ที่สร้าง
+    inputs/outputs จะถูก serialize เป็น JSON string
+    """
+    ws  = _get_ws(WS_VALUATIONS)
+    vid = _new_id()
+    ws.append_row([
+        vid,
+        str(company_name),
+        str(ticker).upper(),
+        str(currency),
+        str(date_valued),
+        _json.dumps(inputs,  ensure_ascii=False),
+        _json.dumps(outputs, ensure_ascii=False),
+        str(notes),
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+    ])
+    _ws_to_df.clear()
+    return vid
+
+
+def val_update(val_id: str, inputs: dict = None, outputs: dict = None, notes: str = None):
+    """อัปเดต inputs/outputs/notes ของ valuation ที่มีอยู่"""
+    ws      = _get_ws(WS_VALUATIONS)
+    headers = HEADERS[WS_VALUATIONS]
+    row_i   = _find_row(ws, "id", val_id, headers)
+    if not row_i:
+        return
+    if inputs is not None:
+        col = headers.index("inputs_json") + 1
+        ws.update_cell(row_i, col, _json.dumps(inputs, ensure_ascii=False))
+    if outputs is not None:
+        col = headers.index("outputs_json") + 1
+        ws.update_cell(row_i, col, _json.dumps(outputs, ensure_ascii=False))
+    if notes is not None:
+        col = headers.index("notes") + 1
+        ws.update_cell(row_i, col, str(notes))
+    _ws_to_df.clear()
+
+
+def val_load() -> pd.DataFrame:
+    """
+    โหลด valuations ทั้งหมด
+    คืน DataFrame ที่มีคอลัมน์ inputs_json / outputs_json เป็น string
+    (ใช้ _json.loads เพื่อ parse เพิ่มเติมเอง)
+    """
+    df = _ws_to_df(WS_VALUATIONS)
+    if df.empty:
+        return df
+    df = df.sort_values("created_at", ascending=False)
+    return df.reset_index(drop=True)
+
+
+def val_load_one(val_id: str) -> dict | None:
+    """
+    โหลด valuation เดียว คืน dict  (inputs_json / outputs_json ถูก parse เป็น dict แล้ว)
+    คืน None ถ้าไม่เจอ
+    """
+    df = val_load()
+    if df.empty:
+        return None
+    row = df[df["id"] == val_id]
+    if row.empty:
+        return None
+    rec = row.iloc[0].to_dict()
+    try:
+        rec["inputs"]  = _json.loads(rec.get("inputs_json",  "{}") or "{}")
+    except Exception:
+        rec["inputs"]  = {}
+    try:
+        rec["outputs"] = _json.loads(rec.get("outputs_json", "{}") or "{}")
+    except Exception:
+        rec["outputs"] = {}
+    return rec
+
+
+def val_delete(val_id: str):
+    """ลบ valuation และ scenarios ที่ผูกอยู่ทั้งหมด"""
+    # ลบ scenarios ก่อน
+    scenario_delete_all(val_id)
+    # ลบ valuation
+    ws    = _get_ws(WS_VALUATIONS)
+    row_i = _find_row(ws, "id", val_id, HEADERS[WS_VALUATIONS])
+    if row_i:
+        ws.delete_rows(row_i)
+    _ws_to_df.clear()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VALUATION SCENARIOS helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def scenario_save(
+    valuation_id: str,
+    scenario_name: str,
+    inputs: dict,
+    outputs: dict,
+) -> str:
+    """
+    บันทึก scenario ใหม่สำหรับ valuation ที่ระบุ  คืน scenario id
+    """
+    ws  = _get_ws(WS_VAL_SCENARIOS)
+    sid = _new_id()
+    ws.append_row([
+        sid,
+        str(valuation_id),
+        str(scenario_name),
+        _json.dumps(inputs,  ensure_ascii=False),
+        _json.dumps(outputs, ensure_ascii=False),
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+    ])
+    _ws_to_df.clear()
+    return sid
+
+
+def scenario_load(valuation_id: str) -> list[dict]:
+    """
+    โหลด scenarios ทั้งหมดของ valuation ที่ระบุ
+    คืน list[dict]  โดย inputs/outputs ถูก parse เป็น dict แล้ว
+    """
+    df = _ws_to_df(WS_VAL_SCENARIOS)
+    if df.empty:
+        return []
+    df = df[df["valuation_id"] == str(valuation_id)]
+    result = []
+    for _, row in df.iterrows():
+        rec = row.to_dict()
+        try:
+            rec["inputs"]  = _json.loads(rec.get("inputs_json",  "{}") or "{}")
+        except Exception:
+            rec["inputs"]  = {}
+        try:
+            rec["outputs"] = _json.loads(rec.get("outputs_json", "{}") or "{}")
+        except Exception:
+            rec["outputs"] = {}
+        result.append(rec)
+    return result
+
+
+def scenario_delete(scenario_id: str):
+    """ลบ scenario เดียว"""
+    ws    = _get_ws(WS_VAL_SCENARIOS)
+    row_i = _find_row(ws, "id", scenario_id, HEADERS[WS_VAL_SCENARIOS])
+    if row_i:
+        ws.delete_rows(row_i)
+    _ws_to_df.clear()
+
+
+def scenario_delete_all(valuation_id: str):
+    """ลบ scenarios ทั้งหมดที่ผูกกับ valuation_id — ใช้ตอนลบ valuation"""
+    ws    = _get_ws(WS_VAL_SCENARIOS)
+    df    = _ws_to_df(WS_VAL_SCENARIOS)
+    if df.empty:
+        return
+    ids_to_delete = df[df["valuation_id"] == str(valuation_id)]["id"].tolist()
+    # ลบจากท้ายขึ้นบน เพื่อไม่ให้ row index เลื่อน
+    headers    = HEADERS[WS_VAL_SCENARIOS]
+    row_indices = []
+    for sid in ids_to_delete:
+        row_i = _find_row(ws, "id", sid, headers)
+        if row_i:
+            row_indices.append(row_i)
+    for row_i in sorted(row_indices, reverse=True):
+        ws.delete_rows(row_i)
     _ws_to_df.clear()
 
 
