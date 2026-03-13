@@ -3172,37 +3172,82 @@ def _val_wizard():
     elif step == 2:
         st.markdown("### 📈 สมมติฐานการเติบโตและต้นทุนทุน")
 
+        # ── คู่มือหาค่าพารามิเตอร์ (expander) ─────────────────────────────────
+        with st.expander("📚 วิธีหาค่าพารามิเตอร์แต่ละตัว", expanded=False):
+            st.markdown("""
+| พารามิเตอร์ | หาจากที่ไหน | ค่าอ้างอิงทั่วไป |
+|---|---|---|
+| **Revenue Growth ปีที่ 1** | Yahoo Finance → แท็บ **Analysis** → Revenue Estimate / หรือ Management Guidance ใน Earnings Call | ตาม Analyst consensus |
+| **Revenue Growth ปีสุดท้าย** | Growth ที่คาดว่าบริษัทจะเติบโตได้ยั่งยืนระยะยาว | 3–8% แล้วแต่อุตสาหกรรม |
+| **จำนวนปีที่คาดการณ์** | ตัดสินใจตามความแน่นอนของธุรกิจ | สาธารณูปโภค/อาหาร = 10, Tech/Startup = 5 |
+| **EBIT Margin เป้าหมาย** | Macrotrends.net → ค้นชื่อบริษัท → *Operating Profit Margin* ย้อนหลัง 5 ปี หรือ Peer average | ตาม Historical margin |
+| **Sales-to-Capital Ratio** | คำนวณเอง: `Revenue ÷ (Equity + Debt − Cash)` จาก Balance Sheet | หรือดู Industry avg จาก **Damodaran Online** |
+| **WACC** | [WACC.com](https://wacc.com) คำนวณให้แล้ว / หรือใช้ CAPM: `Rf + Beta × ERP` (Beta จาก Yahoo Finance, Rf = Bond yield 10 ปี) | Developed ≈ 8–12%, Emerging ≈ 10–15% |
+| **Terminal Growth Rate** | GDP growth ระยะยาวของประเทศที่บริษัทขายส่วนใหญ่ — **ห้ามเกิน WACC** | US/EU ≈ 2–3%, ไทย/ซาอุ ≈ 3–5% |
+| **Terminal ROIC** | ROIC เฉลี่ย 5 ปีย้อนหลังจาก Macrotrends หรือ Wisesheets | บริษัท moat แข็ง = สูงได้, Commodity = ≈ WACC |
+| **Margin of Safety** | ตัดสินใจตามความเสี่ยงที่รับได้ | มั่นคง = 20%, ปานกลาง = 30%, ผันผวน = 40–50% |
+
+**แหล่งข้อมูลหลัก:** [Yahoo Finance](https://finance.yahoo.com) · [Macrotrends](https://macrotrends.net) · [Damodaran Online](https://pages.stern.nyu.edu/~adamodar) · Annual Report ของบริษัท
+""")
+
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("#### 🚀 การเติบโตของรายได้")
-            growth_yr1   = st.slider("Revenue Growth ปีที่ 1 (%)",   -10.0, 50.0,
-                                     float(saved.get("revenue_growth_yr1",   0.12)) * 100, 0.5, format="%.1f%%") / 100
-            growth_final = st.slider("Revenue Growth ปีสุดท้าย (%)", -5.0, 30.0,
-                                     float(saved.get("revenue_growth_final", 0.05)) * 100, 0.5, format="%.1f%%") / 100
-            growth_years = st.slider("จำนวนปีที่คาดการณ์",  3, 15,
-                                     int(saved.get("growth_years", 10)), 1)
+            growth_yr1   = st.slider(
+                "Revenue Growth ปีที่ 1 (%)", -10.0, 50.0,
+                float(saved.get("revenue_growth_yr1",   0.12)) * 100, 0.5, format="%.1f%%",
+                help="📍 Yahoo Finance → Analysis → Revenue Estimate | หรือ Management Guidance ใน Earnings Call"
+            ) / 100
+            growth_final = st.slider(
+                "Revenue Growth ปีสุดท้าย (%)", -5.0, 30.0,
+                float(saved.get("revenue_growth_final", 0.05)) * 100, 0.5, format="%.1f%%",
+                help="📍 Growth ที่คาดว่าบริษัทจะเติบโตได้ยั่งยืน — โดยทั่วไป 3–8% แล้วแต่อุตสาหกรรม"
+            ) / 100
+            growth_years = st.slider(
+                "จำนวนปีที่คาดการณ์", 3, 15,
+                int(saved.get("growth_years", 10)), 1,
+                help="📍 สาธารณูปโภค / อาหาร = 10 ปี | Tech / Startup = 5 ปี | ยิ่งคาดเดาง่าย ยิ่งใช้ได้นานขึ้น"
+            )
 
             st.markdown("#### 📊 Margin & Reinvestment")
-            ebit_target     = st.slider("EBIT Margin เป้าหมาย (%)",  0.0, 50.0,
-                                        float(saved.get("ebit_margin_target", 0.15)) * 100, 0.5, format="%.1f%%") / 100
-            sales_to_cap    = st.number_input("Sales-to-Capital Ratio", value=float(saved.get("sales_to_capital", 1.5)),
-                                               min_value=0.1, max_value=10.0, step=0.1, format="%.2f",
-                                               help="รายได้ต่อทุนที่ลงทุน ยิ่งสูง = ต้องการ Capex น้อย")
+            ebit_target  = st.slider(
+                "EBIT Margin เป้าหมาย (%)", 0.0, 50.0,
+                float(saved.get("ebit_margin_target", 0.15)) * 100, 0.5, format="%.1f%%",
+                help="📍 Macrotrends.net → ค้นชื่อบริษัท → Operating Profit Margin ย้อนหลัง 5 ปี | หรือ Peer average"
+            ) / 100
+            sales_to_cap = st.number_input(
+                "Sales-to-Capital Ratio",
+                value=float(saved.get("sales_to_capital", 1.5)),
+                min_value=0.1, max_value=10.0, step=0.1, format="%.2f",
+                help="📍 คำนวณ: Revenue ÷ (Equity + Debt − Cash) จาก Balance Sheet | หรือดู Industry avg จาก Damodaran Online"
+            )
 
         with col2:
             st.markdown("#### 💸 ต้นทุนทุน (WACC)")
-            wacc         = st.slider("WACC (%)",    3.0, 20.0,
-                                     float(saved.get("wacc", 0.10)) * 100, 0.25, format="%.2f%%") / 100
+            wacc         = st.slider(
+                "WACC (%)", 3.0, 20.0,
+                float(saved.get("wacc", 0.10)) * 100, 0.25, format="%.2f%%",
+                help="📍 WACC.com คำนวณให้แล้ว | หรือ CAPM: Rf + Beta × ERP (Beta จาก Yahoo Finance, Rf = Bond yield 10 ปี)"
+            ) / 100
 
             st.markdown("#### 🏁 Terminal Value")
-            term_growth  = st.slider("Terminal Growth Rate (%)", 0.0, 5.0,
-                                     float(saved.get("terminal_growth", 0.025)) * 100, 0.25, format="%.2f%%") / 100
-            term_roic    = st.slider("Terminal ROIC (%)", 3.0, 30.0,
-                                     float(saved.get("terminal_roic", 0.12)) * 100, 0.5, format="%.1f%%") / 100
+            term_growth  = st.slider(
+                "Terminal Growth Rate (%)", 0.0, 5.0,
+                float(saved.get("terminal_growth", 0.025)) * 100, 0.25, format="%.2f%%",
+                help="📍 GDP growth ระยะยาว — Developed (US/EU) ≈ 2–3% | Emerging (ไทย/ซาอุ) ≈ 3–5% | ห้ามเกิน WACC"
+            ) / 100
+            term_roic    = st.slider(
+                "Terminal ROIC (%)", 3.0, 30.0,
+                float(saved.get("terminal_roic", 0.12)) * 100, 0.5, format="%.1f%%",
+                help="📍 ROIC เฉลี่ย 5 ปีย้อนหลัง จาก Macrotrends หรือ Wisesheets | บริษัท moat แข็ง = สูงได้ | Commodity = ≈ WACC"
+            ) / 100
 
             st.markdown("#### 🛡️ Margin of Safety")
-            mos          = st.slider("Margin of Safety (%)", 0.0, 50.0,
-                                     float(saved.get("margin_of_safety", 0.20)) * 100, 5.0, format="%.0f%%") / 100
+            mos          = st.slider(
+                "Margin of Safety (%)", 0.0, 50.0,
+                float(saved.get("margin_of_safety", 0.20)) * 100, 5.0, format="%.0f%%",
+                help="📍 มั่นคง = 20% | ปานกลาง = 30% | ผันผวนสูง = 40–50% | Buffett มักใช้ 25–50%"
+            ) / 100
 
         # ── Preview ──────────────────────────────────────────────────────────
         preview_inp = DCFInputs(
