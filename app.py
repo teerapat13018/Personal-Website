@@ -3003,7 +3003,7 @@ def main():
 
 def _render_valuation_tab():
     """Render the 💎 Valuation tab — 3-step DCF Wizard"""
-    from dcf_engine import DCFInputs, DCFOutputs, run_dcf, run_scenarios, sensitivity_table, reverse_dcf, reverse_dcf_single_stage
+    from dcf_engine import DCFInputs, DCFOutputs, run_dcf, run_scenarios, sensitivity_table, reverse_dcf, reverse_dcf_single_stage, fetch_multiples, implied_value_from_multiples
     from db_gsheets import (
         val_save, val_load, val_load_one, val_update, val_delete,
         scenario_save, scenario_load, scenario_delete, scenario_delete_all,
@@ -3052,7 +3052,7 @@ def _render_valuation_tab():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _val_wizard():
-    from dcf_engine import DCFInputs, DCFOutputs, run_dcf, run_scenarios, sensitivity_table, reverse_dcf, reverse_dcf_single_stage
+    from dcf_engine import DCFInputs, DCFOutputs, run_dcf, run_scenarios, sensitivity_table, reverse_dcf, reverse_dcf_single_stage, fetch_multiples, implied_value_from_multiples
 
     step = st.session_state["val_step"]
 
@@ -3417,6 +3417,244 @@ def _val_wizard():
                             f"{ms['implied_revenue']:,.0f}M {cur}",
                             f"×{ms['multiple']:.1f} จากปัจจุบัน",
                         )
+
+        st.divider()
+
+        # ══════════════════════════════════════════════════════════════════════
+        # ── Cross-validate: Peer Multiples (Comps) ────────────────────────────
+        # ══════════════════════════════════════════════════════════════════════
+        st.markdown("#### 🏢 Cross-validate กับ Peer Companies (Comparable Multiples)")
+        st.caption(
+            "กรอก Ticker ของบริษัทในอุตสาหกรรมเดียวกัน 3–5 ตัว → ดึง EV/EBITDA, P/E, EV/Revenue → "
+            "คำนวณ implied value และเปรียบเทียบกับ DCF ของคุณ"
+        )
+
+        # ── Peer ticker input ────────────────────────────────────────────────
+        peer_col1, peer_col2 = st.columns([3, 1])
+        with peer_col1:
+            peer_tickers_raw = st.text_input(
+                "Peer Tickers (คั่นด้วย comma)",
+                value=st.session_state.get("peer_tickers_raw", ""),
+                placeholder="เช่น  RKLB, SPCE, ASTR, RDW",
+                key="peer_tickers_input",
+                help="ใช้ Yahoo Finance ticker เช่น AAPL, PTT.BK, 2280.SR"
+            )
+        with peer_col2:
+            fetch_peers_btn = st.button(
+                "🔍 ดึงข้อมูล Peers",
+                use_container_width=True,
+                key="fetch_peers_btn"
+            )
+
+        # ── Fetch & cache peer data ──────────────────────────────────────────
+        if fetch_peers_btn and peer_tickers_raw.strip():
+            tickers_list = [t.strip().upper() for t in peer_tickers_raw.split(",") if t.strip()]
+            if tickers_list:
+                st.session_state["peer_tickers_raw"] = peer_tickers_raw
+                with st.spinner("กำลังดึงข้อมูลจาก Yahoo Finance…"):
+                    peer_data_list = []
+                    for pt in tickers_list[:6]:   # max 6 peers
+                        pd_row = fetch_multiples(pt)
+                        peer_data_list.append(pd_row)
+                st.session_state["peer_multiples"] = peer_data_list
+
+        peer_list = st.session_state.get("peer_multiples", [])
+
+        if peer_list:
+            valid_peers  = [p for p in peer_list if not p.get("_error")]
+            broken_peers = [p for p in peer_list if p.get("_error")]
+
+            if broken_peers:
+                for bp in broken_peers:
+                    st.warning(f"⚠️ {bp['ticker']}: {bp['_error']}")
+
+            if valid_peers:
+                # ── Peer comparison table ────────────────────────────────────
+                import pandas as _pd_peer
+                peer_rows = []
+                for p in valid_peers:
+                    peer_rows.append({
+                        "Ticker":       p.get("ticker", ""),
+                        "Company":      (p.get("company_name") or "")[:28],
+                        "Mkt Cap (M)":  f"{p['market_cap_m']:,.0f}" if p.get("market_cap_m") else "–",
+                        "Revenue (M)":  f"{p['revenue_m']:,.0f}"    if p.get("revenue_m")    else "–",
+                        "EBITDA (M)":   f"{p['ebitda_m']:,.0f}"     if p.get("ebitda_m")     else "–",
+                        "EV/EBITDA":    f"{p['ev_ebitda']:.1f}x"    if p.get("ev_ebitda")    else "–",
+                        "P/E":          f"{p['pe_ratio']:.1f}x"     if p.get("pe_ratio")     else "–",
+                        "EV/Revenue":   f"{p['ev_revenue']:.2f}x"   if p.get("ev_revenue")   else "–",
+                    })
+
+                peer_df = _pd_peer.DataFrame(peer_rows)
+                st.markdown("**📊 ตาราง Peer Multiples**")
+                st.dataframe(peer_df, use_container_width=True, hide_index=True)
+
+                # ── Implied value from peer medians ──────────────────────────
+                implied = implied_value_from_multiples(inp, valid_peers, inp.shares_outstanding)
+                if not implied.get("_error"):
+                    st.markdown("**💡 Implied Value จาก Peer Median Multiples**")
+                    st.caption(
+                        f"คำนวณจาก Revenue = {inp.revenue_base:,.0f}M | "
+                        f"EBIT Margin target = {inp.ebit_margin_target:.0%} | "
+                        f"Net Debt = {inp.net_debt:,.0f}M | Shares = {inp.shares_outstanding:,.2f}M"
+                    )
+
+                    impl_cols = st.columns(3)
+                    _impl_methods = [
+                        ("EV/EBITDA",  implied.get("median_ev_ebitda"),  implied.get("implied_price_ev_ebitda"),  "median EV/EBITDA",  "x"),
+                        ("P/E",        implied.get("median_pe"),          implied.get("implied_price_pe"),         "median P/E",         "x"),
+                        ("EV/Revenue", implied.get("median_ev_revenue"),  implied.get("implied_price_ev_rev"),     "median EV/Rev",      "x"),
+                    ]
+                    for icol, (method_name, median_val, impl_price, label, suffix) in zip(impl_cols, _impl_methods):
+                        with icol:
+                            if median_val is not None and impl_price is not None:
+                                # Compare to current price
+                                cp = inp.current_price
+                                if cp and cp > 0:
+                                    pct_diff = (impl_price - cp) / cp * 100
+                                    arrow = "▲" if pct_diff > 0 else "▼"
+                                    diff_txt = f"{arrow} {abs(pct_diff):.1f}% vs ราคาตลาด"
+                                    diff_color = "#26a69a" if pct_diff > 0 else "#ef5350"
+                                else:
+                                    diff_txt   = ""
+                                    diff_color = "#aaa"
+
+                                st.markdown(
+                                    f"""<div style="border:1px solid #3a3a5c; border-radius:10px; padding:14px; text-align:center">
+                                    <div style="font-size:0.85rem; color:#aaa">{method_name}</div>
+                                    <div style="font-size:0.75rem; color:#888">{label} = {median_val:.1f}{suffix}</div>
+                                    <div style="font-size:1.8rem; font-weight:700; color:#5c6bc0; margin:4px 0">
+                                        {impl_price:,.2f}</div>
+                                    <div style="font-size:0.75rem; color:#aaa">{cur}/share</div>
+                                    <div style="font-size:0.8rem; color:{diff_color}; margin-top:4px">{diff_txt}</div>
+                                    </div>""",
+                                    unsafe_allow_html=True
+                                )
+                            else:
+                                st.markdown(
+                                    f"<div style='border:1px solid #333; border-radius:10px; padding:14px; text-align:center; color:#666'>"
+                                    f"{method_name}<br/>ข้อมูลไม่เพียงพอ</div>",
+                                    unsafe_allow_html=True
+                                )
+
+                # ── Football Field Chart ──────────────────────────────────────
+                st.markdown("**🏈 Football Field Chart — Valuation Range**")
+                import plotly.graph_objects as _go_ff
+
+                ff_methods  = []
+                ff_lows     = []
+                ff_highs    = []
+                ff_colors   = []
+
+                # 1. DCF: Bear → Bull
+                bear_out = scenarios.get("Bear")
+                bull_out = scenarios.get("Bull")
+                if bear_out and not bear_out.error and bull_out and not bull_out.error:
+                    ff_methods.append("DCF (Bear–Bull)")
+                    ff_lows.append(bear_out.mos_price)
+                    ff_highs.append(bull_out.intrinsic_per_share)
+                    ff_colors.append("#7c3aed")
+
+                # 2. DCF Base (point — show as narrow range ±5%)
+                ff_methods.append("DCF Base Intrinsic")
+                ff_lows.append(out.mos_price)
+                ff_highs.append(out.intrinsic_per_share)
+                ff_colors.append("#5c6bc0")
+
+                # 3. EV/EBITDA
+                if implied.get("implied_price_ev_ebitda"):
+                    _p = implied["implied_price_ev_ebitda"]
+                    ff_methods.append(f"EV/EBITDA ({implied['median_ev_ebitda']:.1f}x)")
+                    ff_lows.append(_p * 0.85)
+                    ff_highs.append(_p * 1.15)
+                    ff_colors.append("#26a69a")
+
+                # 4. P/E
+                if implied.get("implied_price_pe"):
+                    _p = implied["implied_price_pe"]
+                    ff_methods.append(f"P/E ({implied['median_pe']:.1f}x)")
+                    ff_lows.append(_p * 0.85)
+                    ff_highs.append(_p * 1.15)
+                    ff_colors.append("#66bb6a")
+
+                # 5. EV/Revenue
+                if implied.get("implied_price_ev_rev"):
+                    _p = implied["implied_price_ev_rev"]
+                    ff_methods.append(f"EV/Revenue ({implied['median_ev_revenue']:.2f}x)")
+                    ff_lows.append(_p * 0.85)
+                    ff_highs.append(_p * 1.15)
+                    ff_colors.append("#ffa726")
+
+                # 6. Reverse DCF (implied fair-value = market price)
+                if inp.current_price and inp.current_price > 0:
+                    cp = inp.current_price
+                    ff_methods.append("ราคาตลาดปัจจุบัน")
+                    ff_lows.append(cp)
+                    ff_highs.append(cp)
+                    ff_colors.append("#ef5350")
+
+                if ff_methods:
+                    fig_ff = _go_ff.Figure()
+                    for i, (method, lo, hi, clr) in enumerate(zip(ff_methods, ff_lows, ff_highs, ff_colors)):
+                        fig_ff.add_trace(_go_ff.Bar(
+                            name        = method,
+                            y           = [method],
+                            x           = [hi - lo if hi != lo else 0.001],
+                            base        = [lo],
+                            orientation = "h",
+                            marker_color= clr,
+                            marker_line = dict(color=clr, width=1),
+                            text        = [f"{lo:,.2f} – {hi:,.2f}" if hi != lo else f"{lo:,.2f}"],
+                            textposition= "inside",
+                            insidetextanchor="middle",
+                            textfont    = dict(size=11, color="white"),
+                            showlegend  = False,
+                        ))
+
+                    # Market price reference line
+                    if inp.current_price and inp.current_price > 0:
+                        fig_ff.add_vline(
+                            x           = inp.current_price,
+                            line_dash   = "dash",
+                            line_color  = "#ef5350",
+                            line_width  = 2,
+                            annotation_text     = f"ราคาตลาด {inp.current_price:,.2f}",
+                            annotation_position = "top right",
+                            annotation_font     = dict(color="#ef5350", size=11),
+                        )
+
+                    # MOS price reference line
+                    fig_ff.add_vline(
+                        x           = out.mos_price,
+                        line_dash   = "dot",
+                        line_color  = "#ffd54f",
+                        line_width  = 1.5,
+                        annotation_text     = f"MOS {out.mos_price:,.2f}",
+                        annotation_position = "bottom right",
+                        annotation_font     = dict(color="#ffd54f", size=10),
+                    )
+
+                    fig_ff.update_layout(
+                        title       = f"Football Field — Valuation Comparison ({cur}/share)",
+                        template    = "plotly_dark",
+                        height      = max(280, 70 * len(ff_methods) + 80),
+                        paper_bgcolor = "#0e1117",
+                        plot_bgcolor  = "#0e1117",
+                        xaxis_title   = f"Implied Price ({cur})",
+                        xaxis         = dict(gridcolor="#2a2a3e"),
+                        yaxis         = dict(gridcolor="#2a2a3e"),
+                        margin        = dict(l=20, r=20, t=50, b=30),
+                        barmode       = "overlay",
+                    )
+                    st.plotly_chart(fig_ff, use_container_width=True)
+                    st.caption(
+                        "📌 แท่งสี = valuation range จากแต่ละวิธี  |  "
+                        "เส้นประแดง = ราคาตลาดปัจจุบัน  |  "
+                        "เส้นจุดเหลือง = MOS price ของ DCF Base"
+                    )
+            else:
+                st.info("กรอก Peer Tickers แล้วกด 'ดึงข้อมูล Peers' เพื่อเริ่มต้น")
+        else:
+            st.info("กรอก Peer Tickers ด้านบนแล้วกด **🔍 ดึงข้อมูล Peers** เพื่อ cross-validate มูลค่า")
 
         st.divider()
 

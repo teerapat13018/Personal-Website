@@ -686,6 +686,161 @@ def fetch_yf_financials(ticker: str) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Comparable Company Multiples  (Phase 4 — Peer Cross-Validation)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fetch_multiples(ticker: str) -> dict:
+    """
+    ดึง valuation multiples ของ peer company จาก Yahoo Finance
+
+    คืน dict:
+      ticker, company_name, currency
+      ev_ebitda       — Enterprise Value / EBITDA (TTM)
+      pe_ratio        — Trailing P/E
+      ev_revenue      — EV / Revenue (TTM)
+      market_cap_m    — Market Cap (ล้านหน่วยเงิน)
+      enterprise_value_m  — EV (ล้าน)
+      revenue_m       — Revenue TTM (ล้าน)
+      ebitda_m        — EBITDA TTM (ล้าน)
+      net_income_m    — Net Income TTM (ล้าน)
+      _error          — ถ้า error คืน string นี้
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        return {"ticker": ticker.upper(), "_error": "yfinance ไม่ได้ติดตั้ง"}
+
+    try:
+        tk   = yf.Ticker(ticker.strip())
+        info = tk.info or {}
+    except Exception as e:
+        return {"ticker": ticker.upper(), "_error": str(e)}
+
+    if not info:
+        return {"ticker": ticker.upper(), "_error": "ไม่พบข้อมูล"}
+
+    out: dict = {}
+    out["ticker"]       = ticker.strip().upper()
+    out["company_name"] = info.get("longName") or info.get("shortName") or ticker.upper()
+    out["currency"]     = info.get("currency") or "USD"
+
+    # ── Market Cap & EV ───────────────────────────────────────────────────
+    mc = info.get("marketCap")
+    ev = info.get("enterpriseValue")
+    out["market_cap_m"]        = round(float(mc) / 1_000_000, 2) if mc else None
+    out["enterprise_value_m"]  = round(float(ev) / 1_000_000, 2) if ev else None
+
+    # ── Revenue ──────────────────────────────────────────────────────────
+    rev = info.get("totalRevenue")
+    out["revenue_m"] = round(float(rev) / 1_000_000, 2) if rev else None
+
+    # ── EBITDA ───────────────────────────────────────────────────────────
+    ebitda = info.get("ebitda")
+    out["ebitda_m"] = round(float(ebitda) / 1_000_000, 2) if ebitda else None
+
+    # ── Net Income ───────────────────────────────────────────────────────
+    ni = info.get("netIncomeToCommon")
+    out["net_income_m"] = round(float(ni) / 1_000_000, 2) if ni else None
+
+    # ── Multiples — prefer pre-calculated, fallback to computed ──────────
+    # EV/EBITDA
+    ev_ebitda = info.get("enterpriseToEbitda")
+    if ev_ebitda is None and out["enterprise_value_m"] and out["ebitda_m"] and out["ebitda_m"] > 0:
+        ev_ebitda = out["enterprise_value_m"] / out["ebitda_m"]
+    out["ev_ebitda"] = round(float(ev_ebitda), 2) if ev_ebitda is not None else None
+
+    # EV/Revenue
+    ev_rev = info.get("enterpriseToRevenue")
+    if ev_rev is None and out["enterprise_value_m"] and out["revenue_m"] and out["revenue_m"] > 0:
+        ev_rev = out["enterprise_value_m"] / out["revenue_m"]
+    out["ev_revenue"] = round(float(ev_rev), 2) if ev_rev is not None else None
+
+    # P/E (trailing)
+    pe = info.get("trailingPE")
+    out["pe_ratio"] = round(float(pe), 2) if pe is not None else None
+
+    return out
+
+
+def implied_value_from_multiples(
+    inp: "DCFInputs",
+    peers: list[dict],
+    shares_outstanding_m: float,
+) -> dict:
+    """
+    คำนวณ implied equity value per share จาก peer median multiples
+
+    Args:
+        inp: DCFInputs ของบริษัทเป้าหมาย (ใช้ revenue_base, ebitda, net_income)
+        peers: list ของ dict จาก fetch_multiples()
+        shares_outstanding_m: จำนวนหุ้น (ล้านหุ้น)
+
+    Returns dict:
+        median_ev_ebitda, implied_ev_from_ebitda, implied_equity_ev_ebitda, implied_price_ev_ebitda
+        median_pe, implied_equity_pe, implied_price_pe
+        median_ev_revenue, implied_ev_from_revenue, implied_equity_ev_rev, implied_price_ev_rev
+        valid_peers_count
+    """
+    valid = [p for p in peers if not p.get("_error")]
+    if not valid:
+        return {"_error": "ไม่มีข้อมูล peer ที่ถูกต้อง"}
+
+    def _median(vals):
+        clean = sorted([v for v in vals if v is not None and v > 0])
+        n = len(clean)
+        if n == 0:
+            return None
+        return clean[n // 2] if n % 2 == 1 else (clean[n // 2 - 1] + clean[n // 2]) / 2
+
+    ev_ebitdas  = [p.get("ev_ebitda")  for p in valid]
+    pes         = [p.get("pe_ratio")   for p in valid]
+    ev_revs     = [p.get("ev_revenue") for p in valid]
+
+    med_ev_ebitda  = _median(ev_ebitdas)
+    med_pe         = _median(pes)
+    med_ev_revenue = _median(ev_revs)
+
+    nd   = inp.net_debt
+    mi   = inp.minority_interest
+    sh   = shares_outstanding_m if shares_outstanding_m > 0 else 1.0
+
+    # ── Target company estimates ─────────────────────────────────────────
+    # EBITDA ≈ Revenue × EBIT_margin + D&A  (เราไม่มี D&A → ใช้ EBIT as proxy)
+    target_ebit   = inp.revenue_base * inp.ebit_margin_target
+    target_ebitda = target_ebit * 1.15     # +15% D&A rough proxy
+    target_net_inc = target_ebit * (1 - inp.tax_rate)
+
+    res: dict = {"valid_peers_count": len(valid)}
+
+    # EV/EBITDA
+    if med_ev_ebitda and target_ebitda > 0:
+        impl_ev = med_ev_ebitda * target_ebitda
+        impl_eq = impl_ev - nd - mi
+        res["median_ev_ebitda"]          = round(med_ev_ebitda, 2)
+        res["implied_ev_from_ebitda"]    = round(impl_ev, 2)
+        res["implied_equity_ev_ebitda"]  = round(impl_eq, 2)
+        res["implied_price_ev_ebitda"]   = round(impl_eq / sh, 2)
+
+    # P/E
+    if med_pe and target_net_inc > 0:
+        impl_mktcap = med_pe * target_net_inc
+        res["median_pe"]               = round(med_pe, 2)
+        res["implied_equity_pe"]       = round(impl_mktcap, 2)
+        res["implied_price_pe"]        = round(impl_mktcap / sh, 2)
+
+    # EV/Revenue
+    if med_ev_revenue and inp.revenue_base > 0:
+        impl_ev_r = med_ev_revenue * inp.revenue_base
+        impl_eq_r = impl_ev_r - nd - mi
+        res["median_ev_revenue"]          = round(med_ev_revenue, 2)
+        res["implied_ev_from_revenue"]    = round(impl_ev_r, 2)
+        res["implied_equity_ev_rev"]      = round(impl_eq_r, 2)
+        res["implied_price_ev_rev"]       = round(impl_eq_r / sh, 2)
+
+    return res
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Quick self-test
 # ─────────────────────────────────────────────────────────────────────────────
 
