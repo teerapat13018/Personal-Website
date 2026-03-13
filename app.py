@@ -3003,7 +3003,7 @@ def main():
 
 def _render_valuation_tab():
     """Render the 💎 Valuation tab — 3-step DCF Wizard"""
-    from dcf_engine import DCFInputs, DCFOutputs, run_dcf, run_scenarios, sensitivity_table
+    from dcf_engine import DCFInputs, DCFOutputs, run_dcf, run_scenarios, sensitivity_table, reverse_dcf, reverse_dcf_single_stage
     from db_gsheets import (
         val_save, val_load, val_load_one, val_update, val_delete,
         scenario_save, scenario_load, scenario_delete, scenario_delete_all,
@@ -3052,7 +3052,7 @@ def _render_valuation_tab():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _val_wizard():
-    from dcf_engine import DCFInputs, DCFOutputs, run_dcf, run_scenarios, sensitivity_table
+    from dcf_engine import DCFInputs, DCFOutputs, run_dcf, run_scenarios, sensitivity_table, reverse_dcf, reverse_dcf_single_stage
 
     step = st.session_state["val_step"]
 
@@ -3143,6 +3143,12 @@ def _val_wizard():
                                                 help="Net Debt = หนี้สิน − เงินสด (ใส่ค่าลบถ้า net cash)")
             minority_interest = st.number_input("Minority Interest (ล้าน)", value=float(saved.get("minority_interest", 0.0)),   step=10.0,  format="%.2f")
             shares_outstanding = st.number_input("หุ้นทั้งหมด (ล้านหุ้น)",  value=float(saved.get("shares_outstanding", 100.0)), min_value=0.01, step=10.0,  format="%.2f")
+            current_price     = st.number_input(
+                "ราคาตลาดปัจจุบัน (ต่อหุ้น)",
+                value=float(saved.get("current_price", 0.0)),
+                min_value=0.0, step=0.01, format="%.4f",
+                help="📍 ราคาหุ้นล่าสุด จาก Yahoo Finance หรือ Bloomberg — ใช้สำหรับ Reverse DCF (กรอก 0 เพื่อข้าม)"
+            )
 
         st.markdown("---")
         if st.button("ถัดไป →  ขั้นตอนที่ 2", type="primary", use_container_width=True):
@@ -3162,6 +3168,7 @@ def _val_wizard():
                 "net_debt":          net_debt,
                 "minority_interest": minority_interest,
                 "shares_outstanding": shares_outstanding,
+                "current_price":     current_price,
             })
             st.session_state["val_step"] = 2
             st.rerun()
@@ -3342,6 +3349,74 @@ def _val_wizard():
                   help="ราคาเป้าหมายหลังหัก Margin of Safety — ควรซื้อถ้าราคาต่ำกว่านี้")
         h3.metric("🏛️ Enterprise Value",        f"{out.enterprise_value:,.0f}M {cur}")
         h4.metric("💼 Equity Value",            f"{out.equity_value:,.0f}M {cur}")
+
+        # ── Reverse DCF ───────────────────────────────────────────────────────
+        if inp.current_price > 0:
+            st.divider()
+            st.markdown("#### 🔍 ตลาดคาดอะไร? (Reverse DCF)")
+
+            rdcf  = reverse_dcf(inp)
+            rdcf1 = reverse_dcf_single_stage(inp)
+
+            if rdcf.get("error") and not rdcf.get("converged", True):
+                st.warning(f"⚠️ Reverse DCF: {rdcf['error']}")
+            else:
+                # ── Card บน: Multi-year implied growth ──────────────────────
+                signal = rdcf.get("signal", "")
+                sig_color = {"undervalued": "#26a69a", "fairly_valued": "#f59e0b", "overvalued": "#ef5350"}.get(signal, "#888")
+                sig_icon  = {"undervalued": "🟢", "fairly_valued": "🟡", "overvalued": "🔴"}.get(signal, "⚪")
+                sig_label = {"undervalued": "ตลาดคาดน้อยกว่า assumption — อาจมี Upside",
+                             "fairly_valued": "ตลาดคาดใกล้เคียง assumption",
+                             "overvalued": "ตลาดคาดสูงกว่า assumption — ราคา Priced-in มาก"}.get(signal, "")
+
+                implied_g  = rdcf.get("implied_growth_yr1", 0.0)
+                user_g     = inp.revenue_growth_yr1
+                diff       = rdcf.get("vs_user_growth", 0.0)
+
+                r1, r2 = st.columns(2)
+                with r1:
+                    st.markdown(f"""
+<div style="background:#1e1e2e;border:1px solid {sig_color};border-radius:12px;padding:20px">
+  <div style="font-size:13px;color:#aaa;margin-bottom:6px">📈 Multi-year Implied Growth (Primary)</div>
+  <div style="font-size:32px;font-weight:700;color:{sig_color}">{implied_g:.1%} / ปี</div>
+  <div style="font-size:13px;color:#ccc;margin-top:8px">
+    ราคาตลาด <b>{inp.current_price:,.2f} {cur}</b> imply ว่าบริษัทต้องโต <b>{implied_g:.1%}</b> ในปีแรก
+  </div>
+  <div style="font-size:12px;color:#aaa;margin-top:6px">
+    Assumption ของคุณ: <b>{user_g:.1%}</b> &nbsp;|&nbsp; ส่วนต่าง: <b style="color:{sig_color}">{diff:+.1%}</b>
+  </div>
+  <div style="font-size:13px;margin-top:10px">{sig_icon} {sig_label}</div>
+</div>
+""", unsafe_allow_html=True)
+
+                with r2:
+                    if not rdcf1.get("error"):
+                        rev_m  = rdcf1.get("revenue_multiple", 0.0)
+                        ss_rev = rdcf1.get("implied_revenue",  0.0)
+                        st.markdown(f"""
+<div style="background:#1e1e2e;border:1px solid #7c3aed;border-radius:12px;padding:20px">
+  <div style="font-size:13px;color:#aaa;margin-bottom:6px">🏁 Single-Stage Sanity Check (RKLB-style)</div>
+  <div style="font-size:32px;font-weight:700;color:#c084fc">{rev_m:.1f}x</div>
+  <div style="font-size:13px;color:#ccc;margin-top:8px">
+    ต้องโต <b>{rev_m:.1f} เท่า</b> จาก {inp.revenue_base:,.0f}M → {ss_rev:,.0f}M {cur}
+  </div>
+  <div style="font-size:12px;color:#aaa;margin-top:6px">
+    ที่ EBIT Margin {inp.ebit_margin_target:.0%} | RONIC {inp.terminal_roic:.0%} | g {inp.terminal_growth:.1%}
+  </div>
+  <div style="font-size:12px;color:#888;margin-top:6px">⚠️ Single-stage = floor estimate (ไม่นับ negative FCFF ช่วงแรก)</div>
+</div>
+""", unsafe_allow_html=True)
+
+                # ── Margin sensitivity (single-stage) ───────────────────────
+                if not rdcf1.get("error") and rdcf1.get("margin_scenarios"):
+                    st.markdown("**Sensitivity: Revenue ที่ต้องใหญ่ถึง — ตาม EBIT Margin**")
+                    ms_cols = st.columns(3)
+                    for ms_col, ms in zip(ms_cols, rdcf1["margin_scenarios"]):
+                        ms_col.metric(
+                            f"Margin {ms['margin']:.0%}",
+                            f"{ms['implied_revenue']:,.0f}M {cur}",
+                            f"×{ms['multiple']:.1f} จากปัจจุบัน",
+                        )
 
         st.divider()
 

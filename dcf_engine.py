@@ -63,6 +63,9 @@ class DCFInputs:
     # ── Margin of Safety ─────────────────────────────────────────────────────
     margin_of_safety:     float = 0.20   # ส่วนลดความปลอดภัย เช่น 0.20 = 20%
 
+    # ── Reverse DCF ──────────────────────────────────────────────────────────
+    current_price:        float = 0.0    # ราคาตลาดปัจจุบันต่อหุ้น (0 = ไม่ระบุ → ข้าม)
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -375,6 +378,141 @@ def tornado_data(
 # ─────────────────────────────────────────────────────────────────────────────
 # Export helper  (Phase 3)
 # ─────────────────────────────────────────────────────────────────────────────
+# Reverse DCF
+# ─────────────────────────────────────────────────────────────────────────────
+
+def reverse_dcf(inp: DCFInputs, market_price: float = 0.0) -> dict:
+    """
+    Multi-year Reverse DCF (Primary method — แม่นกว่า)
+    Binary search หา revenue_growth_yr1 ที่ทำให้ intrinsic_per_share ≈ market_price
+
+    Returns dict:
+        implied_growth_yr1  : float  (เช่น 0.35 = 35% ต่อปี)
+        vs_user_growth      : float  (implied − user assumption)
+        signal              : "undervalued" | "fairly_valued" | "overvalued"
+        market_price        : float
+        converged           : bool
+        error               : str (ถ้ามี)
+    """
+    price = market_price if market_price > 0 else inp.current_price
+    if price <= 0:
+        return {"error": "ไม่มี market_price — กรอกราคาตลาดใน Step 1"}
+
+    lo, hi = -0.50, 3.00   # search range: −50% ถึง +300% growth
+    converged = False
+    implied_g = float("nan")
+
+    for _ in range(60):   # max iterations
+        mid = (lo + hi) / 2.0
+        d   = {**inp.to_dict(), "revenue_growth_yr1": mid}
+        out = run_dcf(DCFInputs.from_dict(d))
+        if out.error:
+            break
+        val = out.intrinsic_per_share
+        if abs(val - price) < price * 0.0001:   # tolerance 0.01%
+            implied_g  = mid
+            converged  = True
+            break
+        if val < price:
+            lo = mid
+        else:
+            hi = mid
+    else:
+        implied_g = (lo + hi) / 2.0
+        converged = abs(implied_g - lo) < 0.0005
+
+    diff = implied_g - inp.revenue_growth_yr1
+    if diff < -0.03:
+        signal = "undervalued"    # ตลาดคาดโตน้อยกว่าที่เรา assume → เราเห็น upside
+    elif diff > 0.03:
+        signal = "overvalued"     # ตลาดคาด imply growth สูงกว่า assumption ของเรา
+    else:
+        signal = "fairly_valued"
+
+    return {
+        "implied_growth_yr1": implied_g,
+        "vs_user_growth":     diff,
+        "signal":             signal,
+        "market_price":       price,
+        "converged":          converged,
+        "error":              "" if converged else "binary search ไม่ converge — ลองปรับ assumption",
+    }
+
+
+def reverse_dcf_single_stage(inp: DCFInputs, market_price: float = 0.0) -> dict:
+    """
+    Single-stage Reverse DCF — RKLB-style (Secondary / Sanity Check)
+    สูตร: EV = FCFF_ss / (WACC − g)  →  แก้หา implied Steady-State Revenue
+
+    Returns dict:
+        implied_ev           : float  (ล้าน)
+        implied_fcff         : float  (ล้าน)
+        implied_nopat        : float  (ล้าน)
+        implied_ebit         : float  (ล้าน)
+        implied_revenue      : float  (ล้าน)  — ที่ ebit_margin_target
+        revenue_multiple     : float  — implied_revenue / revenue_base
+        reinvestment_rate    : float
+        margin_scenarios     : list[dict]  [{margin, implied_revenue, multiple}]
+        error                : str
+    """
+    price = market_price if market_price > 0 else inp.current_price
+    if price <= 0:
+        return {"error": "ไม่มี market_price"}
+
+    wacc = inp.wacc
+    g    = inp.terminal_growth
+    if wacc <= g:
+        return {"error": "WACC ต้องมากกว่า Terminal Growth Rate"}
+
+    # ── Equity Value → Enterprise Value ──────────────────────────────────────
+    equity_value_m  = price * inp.shares_outstanding          # ล้าน
+    implied_ev      = equity_value_m + inp.net_debt + inp.minority_interest
+
+    # ── EV → FCFF (Gordon Growth) ─────────────────────────────────────────────
+    implied_fcff    = implied_ev * (wacc - g)
+
+    # ── FCFF → NOPAT  (Reinvestment = g / RONIC) ─────────────────────────────
+    ronic               = inp.terminal_roic
+    reinvestment_rate   = g / ronic if ronic > 0 else 0.25
+    reinvestment_rate   = max(0.0, min(reinvestment_rate, 0.99))
+    implied_nopat       = implied_fcff / (1 - reinvestment_rate) if reinvestment_rate < 1 else 0.0
+
+    # ── NOPAT → EBIT ──────────────────────────────────────────────────────────
+    t             = inp.tax_rate
+    implied_ebit  = implied_nopat / (1 - t) if t < 1 else 0.0
+
+    # ── EBIT → Revenue (at target margin + sensitivity range) ─────────────────
+    base_margin     = inp.ebit_margin_target if inp.ebit_margin_target > 0 else 0.15
+    implied_revenue = implied_ebit / base_margin if base_margin > 0 else 0.0
+    revenue_base    = inp.revenue_base if inp.revenue_base > 0 else 1.0
+    revenue_multiple = implied_revenue / revenue_base
+
+    # Sensitivity: margin scenarios
+    margin_scenarios = []
+    for m in [base_margin * 0.75, base_margin, base_margin * 1.25]:
+        m = round(m, 4)
+        rev = implied_ebit / m if m > 0 else 0.0
+        margin_scenarios.append({
+            "margin":   m,
+            "implied_revenue": rev,
+            "multiple": rev / revenue_base,
+        })
+
+    return {
+        "implied_ev":        implied_ev,
+        "implied_fcff":      implied_fcff,
+        "implied_nopat":     implied_nopat,
+        "implied_ebit":      implied_ebit,
+        "implied_revenue":   implied_revenue,
+        "revenue_multiple":  revenue_multiple,
+        "reinvestment_rate": reinvestment_rate,
+        "margin_scenarios":  margin_scenarios,
+        "market_price":      price,
+        "error":             "",
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 def export_to_csv(inp: DCFInputs, out: DCFOutputs, scenarios: dict) -> str:
     """
@@ -467,6 +605,15 @@ def fetch_yf_financials(ticker: str) -> dict:
     result["company_name"] = info.get("longName") or info.get("shortName") or ticker
     result["ticker"]       = ticker.upper()
     result["currency"]     = info.get("currency") or info.get("financialCurrency") or "USD"
+
+    # ── Current Market Price ────────────────────────────────────────────────
+    price_raw = (
+        info.get("currentPrice") or
+        info.get("regularMarketPrice") or
+        info.get("previousClose")
+    )
+    if price_raw:
+        result["current_price"] = round(float(price_raw), 4)
 
     # ── Revenue (TTM) ──────────────────────────────────────────────────────
     rev_raw = (
