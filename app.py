@@ -4289,14 +4289,6 @@ def _render_timeline_tab():
     st.markdown("## 📖 Company Timeline Generator")
     st.caption("กรอกชื่อบริษัท → ระบบดึงข้อมูลจาก web อัตโนมัติ → แสดง timeline เรื่องราวเป็นภาษาไทย")
 
-    # ── DEBUG: แสดง keys ทั้งหมดที่มีใน secrets (ลบออกหลัง debug) ────────────
-    try:
-        all_keys = list(st.secrets.keys())
-        st.info(f"🔑 Keys ที่พบใน Secrets: {all_keys}")
-    except Exception as _de:
-        st.error(f"❌ Secrets โหลดไม่ได้เลย: {_de}")
-        return
-
     # ── API Keys ─────────────────────────────────────────────────────────────
     try:
         tavily_key = st.secrets["tavily_api_key"]
