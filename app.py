@@ -4291,13 +4291,13 @@ def _render_timeline_tab():
 
     # ── API Keys ─────────────────────────────────────────────────────────────
     try:
-        tavily_key = st.secrets["tavily_api_key"]
+        tavily_key = str(st.secrets["tavily_api_key"])
     except Exception as _e1:
         st.error(f"❌ ไม่พบ `tavily_api_key` ใน Secrets: {_e1}")
         return
 
     try:
-        gemini_key = st.secrets["GOOGLE_API_KEY"]
+        gemini_key = str(st.secrets["GOOGLE_API_KEY"])
     except Exception as _e2:
         st.error(f"❌ ไม่พบ `GOOGLE_API_KEY` ใน Secrets: {_e2}")
         return
