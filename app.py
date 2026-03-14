@@ -760,12 +760,13 @@ def main():
     st.title("📈 Investment Dashboard")
     st.caption(f"Last session: {datetime.now().strftime('%d %b %Y %H:%M')}")
 
-    tab_exec, tab_input, tab_chart, tab_adv, tab_val = st.tabs([
+    tab_exec, tab_input, tab_chart, tab_adv, tab_val, tab_timeline = st.tabs([
         "🏠  ภาพรวม",
         "✏️  พอร์ตของฉัน",
         "📊  Chart & Analysis",
         "🚀  Advanced",
         "💎  Valuation",
+        "📖  Company Timeline",
     ])
     # Hidden tabs — preserved for future use
     tab_port  = None  # hidden below with if False:
@@ -4266,6 +4267,127 @@ def _val_list_view():
                     st.rerun()
                 except Exception as _err:
                     st.error(f"ลบไม่สำเร็จ: {_err}")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB TIMELINE — 📖 Company Timeline Generator
+# ════════════════════════════════════════════════════════════════════════════
+
+    with tab_timeline:
+        _render_timeline_tab()
+
+
+def _render_timeline_tab():
+    """Tab: สร้าง Timeline เรื่องราวบริษัทจาก web search + Gemini"""
+    from timeline_engine import (
+        generate_timeline, render_timeline_html,
+        CATEGORIES,
+    )
+
+    st.markdown("## 📖 Company Timeline Generator")
+    st.caption("กรอกชื่อบริษัท → ระบบดึงข้อมูลจาก web อัตโนมัติ → แสดง timeline เรื่องราวเป็นภาษาไทย")
+
+    # ── API Keys ─────────────────────────────────────────────────────────────
+    tavily_key = st.secrets.get("tavily_api_key", "")
+    gemini_key = st.secrets.get("GOOGLE_API_KEY", "")
+
+    if not tavily_key or not gemini_key:
+        missing = []
+        if not tavily_key: missing.append("`tavily_api_key`")
+        if not gemini_key: missing.append("`GOOGLE_API_KEY`")
+        st.error(
+            f"⚠️ ไม่พบ API key ใน Streamlit Secrets: {', '.join(missing)}\n\n"
+            "กรุณาเพิ่มใน **Settings → Secrets** ของ Streamlit Cloud"
+        )
+        return
+
+    # ── Input ─────────────────────────────────────────────────────────────────
+    col_inp, col_btn = st.columns([4, 1])
+    company_input = col_inp.text_input(
+        "ชื่อบริษัท (ภาษาอังกฤษ)",
+        placeholder="เช่น Apple, Tesla, NVIDIA, OpenAI",
+        label_visibility="collapsed",
+    )
+    generate_btn = col_btn.button("🔍 Generate", type="primary", use_container_width=True)
+
+    # ── Session state ─────────────────────────────────────────────────────────
+    if "tl_events"  not in st.session_state: st.session_state["tl_events"]  = []
+    if "tl_company" not in st.session_state: st.session_state["tl_company"] = ""
+    if "tl_error"   not in st.session_state: st.session_state["tl_error"]   = ""
+
+    # ── Generate ──────────────────────────────────────────────────────────────
+    if generate_btn and company_input.strip():
+        with st.spinner("🔍 กำลังค้นหาข้อมูล..."):
+            @st.cache_data(ttl=3600, show_spinner=False)
+            def _cached_timeline(name: str, tk: str, gk: str):
+                from timeline_engine import generate_timeline
+                return generate_timeline(name, tk, gk)
+
+            events, err = _cached_timeline(
+                company_input.strip(),
+                tavily_key,
+                gemini_key,
+            )
+
+        st.session_state["tl_events"]  = events
+        st.session_state["tl_company"] = company_input.strip()
+        st.session_state["tl_error"]   = err
+
+    # ── Error ──────────────────────────────────────────────────────────────────
+    if st.session_state["tl_error"]:
+        st.error(st.session_state["tl_error"])
+        return
+
+    # ── No data yet ────────────────────────────────────────────────────────────
+    events = st.session_state["tl_events"]
+    if not events:
+        st.info("💡 กรอกชื่อบริษัทด้านบนแล้วกด **Generate** เพื่อสร้าง timeline")
+        return
+
+    # ── Summary bar ────────────────────────────────────────────────────────────
+    company_name = st.session_state["tl_company"]
+    years_range  = f"{min(e.year for e in events)} – {max(e.year for e in events)}"
+    st.markdown(
+        f'<div style="background:#12122a;border-radius:10px;padding:12px 18px;margin-bottom:16px;">'
+        f'<span style="font-size:1.1rem;font-weight:700;color:#e8e8f0">{company_name}</span>'
+        f'&nbsp;&nbsp;<span style="color:#888;font-size:0.85rem">{len(events)} events · {years_range}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Filters ────────────────────────────────────────────────────────────────
+    all_cats_in_data = sorted({e.category for e in events})
+    cat_options      = {k: f"{CATEGORIES[k][0]} {CATEGORIES[k][1]}" for k in all_cats_in_data}
+
+    fc1, fc2 = st.columns([3, 2])
+    with fc1:
+        selected_cats = st.multiselect(
+            "ประเภท event",
+            options     = list(cat_options.keys()),
+            default     = list(cat_options.keys()),
+            format_func = lambda k: cat_options[k],
+        )
+    with fc2:
+        yr_min_all = min(e.year for e in events)
+        yr_max_all = max(e.year for e in events)
+        if yr_min_all < yr_max_all:
+            year_range = st.slider(
+                "ช่วงปี",
+                min_value = yr_min_all,
+                max_value = yr_max_all,
+                value     = (yr_min_all, yr_max_all),
+            )
+        else:
+            year_range = (yr_min_all, yr_max_all)
+
+    # ── Render timeline ────────────────────────────────────────────────────────
+    html = render_timeline_html(
+        events,
+        filter_cats = selected_cats if selected_cats else None,
+        year_min    = year_range[0],
+        year_max    = year_range[1],
+    )
+    st.markdown(html, unsafe_allow_html=True)
 
 
 # ─── Entry Point ─────────────────────────────────────────────────────────────
