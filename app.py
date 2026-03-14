@@ -2997,6 +2997,9 @@ def main():
     with tab_val:
         _render_valuation_tab()
 
+    with tab_timeline:
+        _render_timeline_tab()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # VALUATION TAB — helper (called inside main())
@@ -4267,14 +4270,6 @@ def _val_list_view():
                     st.rerun()
                 except Exception as _err:
                     st.error(f"ลบไม่สำเร็จ: {_err}")
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# TAB TIMELINE — 📖 Company Timeline Generator
-# ════════════════════════════════════════════════════════════════════════════
-
-    with tab_timeline:
-        _render_timeline_tab()
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
