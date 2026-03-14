@@ -258,6 +258,19 @@ def _parse_with_gemini(
 # 4. Public API
 # ─────────────────────────────────────────────
 
+def _clean_search_name(company_name: str) -> str:
+    """ตัด suffix และ ticker ออกเพื่อให้ search ได้ผลดีขึ้น"""
+    import re
+    # ตัด (TICKER) ออก เช่น "Amazon.com, Inc. (AMZN)" → "Amazon.com, Inc."
+    name = re.sub(r'\s*\([A-Z]{1,5}\)\s*$', '', company_name).strip()
+    # ตัด suffix บริษัท
+    for suffix in [", Inc.", " Inc.", ", Corp.", " Corp.", " Corporation",
+                   ", Ltd.", " Ltd.", ", LLC", " LLC", ", PLC", " PLC",
+                   ".com", ", N.V.", " N.V."]:
+        name = name.replace(suffix, "")
+    return name.strip().strip(",").strip()
+
+
 def generate_timeline(
     company_name:   str,
     tavily_api_key: str,
@@ -270,9 +283,12 @@ def generate_timeline(
     if not company_name.strip():
         return [], "กรุณากรอกชื่อบริษัท"
 
+    # ทำความสะอาดชื่อก่อนใช้ search
+    search_name = _clean_search_name(company_name)
+
     # Step 1: ดึงข้อมูล
-    wiki_text     = _fetch_wikipedia(company_name)
-    tavily_results = _fetch_tavily(company_name, tavily_api_key)
+    wiki_text      = _fetch_wikipedia(search_name)
+    tavily_results = _fetch_tavily(search_name, tavily_api_key)
 
     if not wiki_text and not tavily_results:
         return [], "ไม่พบข้อมูลของบริษัทนี้ — ลองปรับชื่อบริษัท (เช่น ใส่ชื่อภาษาอังกฤษ)"
