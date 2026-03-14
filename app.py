@@ -4291,20 +4291,15 @@ def _render_timeline_tab():
 
     # ── API Keys ─────────────────────────────────────────────────────────────
     try:
-        tavily_key = st.secrets.get("tavily_api_key", "")
-        gemini_key = st.secrets.get("GOOGLE_API_KEY", "")
-    except Exception:
-        tavily_key = ""
-        gemini_key = ""
+        tavily_key = st.secrets["tavily_api_key"]
+    except Exception as _e1:
+        st.error(f"❌ ไม่พบ `tavily_api_key` ใน Secrets: {_e1}")
+        return
 
-    if not tavily_key or not gemini_key:
-        missing = []
-        if not tavily_key: missing.append("`tavily_api_key`")
-        if not gemini_key: missing.append("`GOOGLE_API_KEY`")
-        st.error(
-            f"⚠️ ไม่พบ API key ใน Streamlit Secrets: {', '.join(missing)}\n\n"
-            "กรุณาเพิ่มใน **Settings → Secrets** ของ Streamlit Cloud"
-        )
+    try:
+        gemini_key = st.secrets["GOOGLE_API_KEY"]
+    except Exception as _e2:
+        st.error(f"❌ ไม่พบ `GOOGLE_API_KEY` ใน Secrets: {_e2}")
         return
 
     # ── Input ─────────────────────────────────────────────────────────────────
