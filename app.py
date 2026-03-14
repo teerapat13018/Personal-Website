@@ -4277,19 +4277,30 @@ def _val_list_view():
         _render_timeline_tab()
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_generate_timeline(name: str, tavily_key: str, gemini_key: str):
+    from timeline_engine import generate_timeline
+    return generate_timeline(name, tavily_key, gemini_key)
+
+
 def _render_timeline_tab():
     """Tab: สร้าง Timeline เรื่องราวบริษัทจาก web search + Gemini"""
-    from timeline_engine import (
-        generate_timeline, render_timeline_html,
-        CATEGORIES,
-    )
+    try:
+        from timeline_engine import render_timeline_html, CATEGORIES
+    except ImportError as _ie:
+        st.error(f"❌ Import error: {_ie} — กรุณาตรวจสอบว่า requirements.txt มี tavily-python และ google-genai แล้ว reboot app")
+        return
 
     st.markdown("## 📖 Company Timeline Generator")
     st.caption("กรอกชื่อบริษัท → ระบบดึงข้อมูลจาก web อัตโนมัติ → แสดง timeline เรื่องราวเป็นภาษาไทย")
 
     # ── API Keys ─────────────────────────────────────────────────────────────
-    tavily_key = st.secrets.get("tavily_api_key", "")
-    gemini_key = st.secrets.get("GOOGLE_API_KEY", "")
+    try:
+        tavily_key = st.secrets.get("tavily_api_key", "")
+        gemini_key = st.secrets.get("GOOGLE_API_KEY", "")
+    except Exception:
+        tavily_key = ""
+        gemini_key = ""
 
     if not tavily_key or not gemini_key:
         missing = []
@@ -4318,17 +4329,11 @@ def _render_timeline_tab():
     # ── Generate ──────────────────────────────────────────────────────────────
     if generate_btn and company_input.strip():
         with st.spinner("🔍 กำลังค้นหาข้อมูล..."):
-            @st.cache_data(ttl=3600, show_spinner=False)
-            def _cached_timeline(name: str, tk: str, gk: str):
-                from timeline_engine import generate_timeline
-                return generate_timeline(name, tk, gk)
-
-            events, err = _cached_timeline(
+            events, err = _cached_generate_timeline(
                 company_input.strip(),
                 tavily_key,
                 gemini_key,
             )
-
         st.session_state["tl_events"]  = events
         st.session_state["tl_company"] = company_input.strip()
         st.session_state["tl_error"]   = err
