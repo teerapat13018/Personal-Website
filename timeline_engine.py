@@ -126,10 +126,9 @@ def _fetch_tavily(company_name: str, api_key: str) -> list[dict]:
     for q in queries:
         try:
             resp = client.search(
-                query             = q,
-                search_depth      = "basic",
-                max_results       = 5,
-                include_raw_content = False,
+                query        = q,
+                search_depth = "basic",
+                max_results  = 5,
             )
             for r in resp.get("results", []):
                 url = r.get("url", "")
@@ -140,8 +139,8 @@ def _fetch_tavily(company_name: str, api_key: str) -> list[dict]:
                         "url":     url,
                         "content": r.get("content", "")[:1_500],
                     })
-        except Exception:
-            pass
+        except Exception as _te:
+            all_results.append({"title": f"[Tavily error: {_te}]", "url": "", "content": ""})
         time.sleep(0.3)
 
     return all_results
@@ -290,8 +289,15 @@ def generate_timeline(
     wiki_text      = _fetch_wikipedia(search_name)
     tavily_results = _fetch_tavily(search_name, tavily_api_key)
 
-    if not wiki_text and not tavily_results:
-        return [], "ไม่พบข้อมูลของบริษัทนี้ — ลองปรับชื่อบริษัท (เช่น ใส่ชื่อภาษาอังกฤษ)"
+    # กรองเฉพาะ error entries ออกก่อนเช็ค
+    real_results = [r for r in tavily_results if not r["title"].startswith("[Tavily error")]
+    tavily_errors = [r["title"] for r in tavily_results if r["title"].startswith("[Tavily error")]
+
+    if not wiki_text and not real_results:
+        err_detail = f" ({tavily_errors[0]})" if tavily_errors else ""
+        return [], f"ไม่พบข้อมูลของบริษัทนี้{err_detail} — ลองปรับ Ticker หรือตรวจสอบ Tavily API key"
+
+    tavily_results = real_results
 
     # Step 2: Parse ด้วย Gemini
     try:
