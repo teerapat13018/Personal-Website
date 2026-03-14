@@ -4304,11 +4304,11 @@ def _render_timeline_tab():
 
     # ── Input ─────────────────────────────────────────────────────────────────
     col_inp, col_btn = st.columns([4, 1])
-    company_input = col_inp.text_input(
-        "ชื่อบริษัท (ภาษาอังกฤษ)",
-        placeholder="เช่น Apple, Tesla, NVIDIA, OpenAI",
+    ticker_input = col_inp.text_input(
+        "Ticker Symbol",
+        placeholder="เช่น AAPL, TSLA, NVDA, AMZN, MSFT",
         label_visibility="collapsed",
-    )
+    ).upper().strip()
     generate_btn = col_btn.button("🔍 Generate", type="primary", use_container_width=True)
 
     # ── Session state ─────────────────────────────────────────────────────────
@@ -4317,15 +4317,24 @@ def _render_timeline_tab():
     if "tl_error"   not in st.session_state: st.session_state["tl_error"]   = ""
 
     # ── Generate ──────────────────────────────────────────────────────────────
-    if generate_btn and company_input.strip():
+    if generate_btn and ticker_input:
+        # ดึงชื่อบริษัทจาก yfinance
         with st.spinner("🔍 กำลังค้นหาข้อมูล..."):
+            try:
+                import yfinance as _yf
+                _tk   = _yf.Ticker(ticker_input)
+                _info = _tk.info or {}
+                company_name = _info.get("longName") or _info.get("shortName") or ticker_input
+            except Exception:
+                company_name = ticker_input
+
             events, err = _cached_generate_timeline(
-                company_input.strip(),
+                f"{company_name} ({ticker_input})",
                 tavily_key,
                 gemini_key,
             )
         st.session_state["tl_events"]  = events
-        st.session_state["tl_company"] = company_input.strip()
+        st.session_state["tl_company"] = f"{company_name} ({ticker_input})"
         st.session_state["tl_error"]   = err
 
     # ── Error ──────────────────────────────────────────────────────────────────
