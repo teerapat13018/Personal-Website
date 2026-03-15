@@ -66,85 +66,155 @@ class TimelineEvent:
 
 
 # ─────────────────────────────────────────────
-# 1. Wikipedia — ดึง summary + sections
+# 1. Wikipedia — ดึงเฉพาะ section ที่ต้องการ
 # ─────────────────────────────────────────────
 
+# Section ที่ต้องการดึง (lowercase matching)
+_WIKI_TARGET_SECTIONS = {
+    "history", "company history", "corporate history", "background",
+    "timeline", "milestones", "products", "services",
+    "products and services", "acquisitions", "mergers and acquisitions",
+    "expansion", "growth", "recent history", "recent developments",
+    "business overview", "operations",
+}
+
+def _extract_wiki_sections(full_text: str) -> str:
+    """แยก section จาก Wikipedia plaintext แล้วเลือกเฉพาะ section ที่ตรงกับ _WIKI_TARGET_SECTIONS"""
+    # plaintext ของ Wikipedia ใช้ == Header == และ === Sub === เป็น section markers
+    sections: list[tuple[str, str]] = []
+    current_header = "_intro"
+    current_lines:  list[str] = []
+
+    for line in full_text.split("\n"):
+        m = re.match(r"^(={2,4})\s*(.+?)\s*\1\s*$", line)
+        if m:
+            sections.append((current_header, "\n".join(current_lines).strip()))
+            current_header = m.group(2).strip()
+            current_lines  = []
+        else:
+            current_lines.append(line)
+    sections.append((current_header, "\n".join(current_lines).strip()))
+
+    selected: list[str] = []
+    total_chars = 0
+    MAX_TOTAL   = 16_000
+    MAX_SECTION = 5_000   # cap per section เพื่อไม่ให้ section ใดยาวเกินไป
+
+    # เก็บ intro เสมอ (ย่อหน้าแรกสุด ~1,000 chars)
+    if sections and sections[0][0] == "_intro":
+        intro_snippet = sections[0][1][:1_200]
+        selected.append(f"[Introduction]\n{intro_snippet}")
+        total_chars += len(intro_snippet)
+
+    # เก็บ section ที่ตรงกับ target
+    for header, content in sections[1:]:
+        if total_chars >= MAX_TOTAL:
+            break
+        h_lower = header.lower()
+        if h_lower in _WIKI_TARGET_SECTIONS or any(t in h_lower for t in _WIKI_TARGET_SECTIONS):
+            chunk = content[:MAX_SECTION]
+            selected.append(f"[{header}]\n{chunk}")
+            total_chars += len(chunk)
+
+    # ถ้าหาไม่เจอ section เลย ให้ fallback เป็น raw text 8,000 chars
+    if len(selected) <= 1:
+        return full_text[:8_000]
+
+    return "\n\n".join(selected)
+
+
 def _fetch_wikipedia(company_name: str) -> str:
-    """ดึง Wikipedia summary ภาษาอังกฤษ"""
+    """ดึง Wikipedia เฉพาะ section History / Products / Acquisitions"""
     try:
-        # Search for page title
-        search_url = "https://en.wikipedia.org/w/api.php"
-        r = requests.get(search_url, params={
-            "action":   "query",
-            "list":     "search",
-            "srsearch": company_name,
-            "srlimit":  3,
-            "format":   "json",
+        api_url = "https://en.wikipedia.org/w/api.php"
+
+        # Step 1 — ค้นหาชื่อบทความ
+        r = requests.get(api_url, params={
+            "action": "query", "list": "search",
+            "srsearch": company_name, "srlimit": 3, "format": "json",
         }, timeout=10)
         results = r.json().get("query", {}).get("search", [])
         if not results:
             return ""
-
         title = results[0]["title"]
 
-        # Fetch full extract (≤ 10,000 chars)
-        r2 = requests.get(search_url, params={
-            "action":      "query",
-            "prop":        "extracts",
-            "exintro":     False,
-            "explaintext": True,
-            "titles":      title,
-            "format":      "json",
-        }, timeout=10)
+        # Step 2 — ดึงเนื้อหาทั้งบทความเป็น plaintext (ไม่จำกัดที่นี่ จำกัดในฟังก์ชัน extract)
+        r2 = requests.get(api_url, params={
+            "action": "query", "prop": "extracts",
+            "exintro": False, "explaintext": True,
+            "titles": title, "format": "json",
+        }, timeout=15)
         pages = r2.json().get("query", {}).get("pages", {})
+        full_text = ""
         for page in pages.values():
-            extract = page.get("extract", "")
-            return extract[:10_000]
+            full_text = page.get("extract", "")
+            break
+
+        if not full_text:
+            return ""
+
+        # Step 3 — ดึงเฉพาะ section ที่ต้องการ
+        return _extract_wiki_sections(full_text)
+
     except Exception:
         return ""
-    return ""
 
 
 # ─────────────────────────────────────────────
 # 2. Tavily — web search
 # ─────────────────────────────────────────────
 
+def _filter_date_sentences(content: str, max_chars: int = 1_000) -> str:
+    """ดึงเฉพาะประโยคที่มีปี พ.ศ./ค.ศ. อยู่ — ลด token โดยไม่เสียข้อมูลวันที่"""
+    year_pat = re.compile(r"\b(19[5-9]\d|20[0-2]\d)\b")
+    # แบ่งประโยคด้วย . ! ? แต่ไม่ตัดกลางตัวเลขเช่น "$2.5B"
+    sentences = re.split(r"(?<=[a-zA-Z\d])\.\s+(?=[A-Z])", content)
+    # เก็บ 2 ประโยคแรกไว้เสมอ (context ของบทความ) + ประโยคที่มีปี
+    first_two   = sentences[:2]
+    dated       = [s for s in sentences[2:] if year_pat.search(s)]
+    combined    = first_two + dated
+    result      = " ".join(combined)
+    return result[:max_chars]
+
+
 def _fetch_tavily(company_name: str, api_key: str) -> list[dict]:
-    """ดึงข่าว/บทความเกี่ยวกับบริษัทจาก Tavily"""
+    """ดึงข่าว/บทความจาก Tavily แบ่งเป็น early (น้อย) และ recent (เยอะ)"""
     import datetime
     from tavily import TavilyClient
     client = TavilyClient(api_key=api_key)
 
-    current_year = datetime.datetime.now().year
-    recent_range = f"{current_year - 4} {current_year - 3} {current_year - 2} {current_year - 1} {current_year}"
+    cy = datetime.datetime.now().year   # current year
 
-    queries = [
-        f"{company_name} company founding history early years origin",
-        f"{company_name} major milestones product launches IPO timeline",
-        f"{company_name} acquisitions mergers expansion international growth",
-        f"{company_name} leadership CEO change crisis controversy scandal",
-        f"{company_name} new products technology AI innovation {recent_range}",
-        f"{company_name} latest news strategy breakthroughs {current_year - 2} {current_year - 1} {current_year}",
+    # (query, max_results)
+    # Early history — 3 results ต่อ query
+    early_queries: list[tuple[str, int]] = [
+        (f"{company_name} founding history origin early years IPO", 3),
+        (f"{company_name} key milestones turning points 1980s 1990s 2000s", 3),
+    ]
+    # Recent — 5 results ต่อ query เน้นปีล่าสุด
+    recent_queries: list[tuple[str, int]] = [
+        (f"{company_name} acquisitions mergers deals partnerships growth", 4),
+        (f"{company_name} new products AI technology innovation {cy-3} {cy-2} {cy-1} {cy}", 5),
+        (f"{company_name} strategy business expansion {cy-4} {cy-3} {cy-2}", 4),
+        (f"{company_name} latest news breakthroughs leadership {cy-1} {cy}", 5),
     ]
 
     all_results: list[dict] = []
-    seen_urls: set[str] = set()
+    seen_urls:   set[str]   = set()
 
-    for q in queries:
+    for q, n in early_queries + recent_queries:
         try:
-            resp = client.search(
-                query        = q,
-                search_depth = "basic",
-                max_results  = 5,
-            )
+            resp = client.search(query=q, search_depth="basic", max_results=n)
             for r in resp.get("results", []):
                 url = r.get("url", "")
                 if url not in seen_urls:
                     seen_urls.add(url)
+                    raw_content = r.get("content", "")
                     all_results.append({
                         "title":   r.get("title", ""),
                         "url":     url,
-                        "content": r.get("content", "")[:1_500],
+                        # กรองเฉพาะประโยคที่มีปี → ลด token ~60%
+                        "content": _filter_date_sentences(raw_content, max_chars=1_000),
                     })
         except Exception as _te:
             all_results.append({"title": f"[Tavily error: {_te}]", "url": "", "content": ""})
@@ -159,37 +229,46 @@ def _fetch_tavily(company_name: str, api_key: str) -> list[dict]:
 
 def _build_system_prompt() -> str:
     import datetime
-    current_year = datetime.datetime.now().year
+    cy = datetime.datetime.now().year
     return f"""
-You are a business historian assistant. Today's year is {current_year}.
+You are a business historian assistant. Today's year is {cy}.
 Your task: extract key historical events about a company from the provided text,
 then return them as a JSON array. Output ONLY valid JSON — no markdown, no explanation.
 
-Rules:
-- Each event must have: year (int), month (int or null), title_th (Thai string ≤ 10 words),
-  description_th (Thai string, 2-3 sentences, informative and specific — name the actual product/deal/person),
+Each event object must have these fields:
+  year (int), month (int or null),
+  title_th (Thai string ≤ 10 words),
+  description_th (Thai string, 2–3 sentences — BE SPECIFIC: name the actual product, deal size, person, country),
   category (one of: founding, product, funding, leadership, crisis, pivot, milestone, expansion, acquisition, ipo, other),
-  source_url (string or ""), source_name (string or ""), importance (1=minor, 2=normal, 3=major turning point)
+  source_url (string or ""), source_name (string or ""),
+  importance (1=minor, 2=normal, 3=major turning point)
+
+TIME-WEIGHTED extraction rules (CRITICAL):
+- BEFORE {cy - 14} (before ~10 years ago): include ONLY the 8–10 most important events
+  → Only founding, IPO, first major product, biggest acquisition, major pivot/crisis — skip minor ones
+- {cy - 14} to {cy - 5}: include up to 12 events — product lines, expansions, key M&A
+- {cy - 5} to {cy} (last 5 years): include ALL significant events, aim for 10–15 events minimum
+  → Be especially thorough here: AI products, new business lines, leadership changes, major deals
+
+Total target: 30–40 events. Distribution should be roughly 20% historical / 30% mid / 50% recent.
+
+Additional rules:
 - Translate ALL text to Thai
-- Extract 30–40 most important events spanning the FULL history from founding to {current_year}
-- CRITICAL: MUST include events from the last 5 years ({current_year - 4}–{current_year}) — do NOT stop at older dates
-- SPREAD events across ALL decades — do not cluster in one time period
-- Prioritise: product launches, acquisitions, pivots, expansions — these make the company's story
-- Be SPECIFIC in description_th: name the actual product (e.g. "Copilot", "Azure", "iPhone 15"), deal size, person, country
-- If multiple sources describe the SAME event, include it ONLY ONCE (merge into the best description)
+- CRITICAL: MUST include events up to {cy} — never stop before the current year
+- Be SPECIFIC: e.g. "Microsoft Copilot" not "AI assistant", "ซื้อ Activision $68.7B" not "ซื้อบริษัทเกม"
+- If multiple sources describe the SAME event, include it ONLY ONCE (use the most detailed description)
 - Do NOT include near-duplicate events with the same topic in the same year
 - Sort by year ascending
-- If year is unknown, make your best estimate — do not skip the event
+- If year is unknown, estimate — do not skip
 
-Return format (example):
+Return format example:
 [
   {{
     "year": 1994, "month": null,
     "title_th": "ก่อตั้ง Amazon ในโรงรถ",
     "description_th": "Jeff Bezos ลาออกจากงาน Wall Street เพื่อก่อตั้ง Amazon ในโรงรถที่ Bellevue รัฐ Washington โดยเริ่มต้นจากการขายหนังสือออนไลน์ แรงบันดาลใจมาจากการเห็นการเติบโตของอินเทอร์เน็ต 2,300% ต่อปี",
     "category": "founding",
-    "source_url": "",
-    "source_name": "Wikipedia",
+    "source_url": "", "source_name": "Wikipedia",
     "importance": 3
   }}
 ]
@@ -208,9 +287,9 @@ def _parse_with_groq(
     context_parts = [f"Company: {company_name}\n"]
 
     if wiki_text:
-        context_parts.append(f"=== Wikipedia ===\n{wiki_text[:8_000]}\n")
+        context_parts.append(f"=== Wikipedia (History & Products sections) ===\n{wiki_text}\n")
 
-    for i, r in enumerate(tavily_results[:16]):
+    for i, r in enumerate(tavily_results[:18]):
         context_parts.append(
             f"=== Article {i+1}: {r['title']} ({r['url']}) ===\n{r['content']}\n"
         )
