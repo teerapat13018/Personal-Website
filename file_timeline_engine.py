@@ -1,8 +1,8 @@
 """
-file_timeline_engine.py
-───────────────────────
+file_timeline_engine.py  v2
+───────────────────────────
 Parse Excel/CSV ที่ผู้ใช้ upload → list[TimelineEvent]
-- ตรวจหาคอลัมน์วันที่ / เหตุการณ์ / ประเภท อัตโนมัติ
+- ตรวจหาคอลัมน์วันที่ / เหตุการณ์ / ประเภท / รายละเอียด อัตโนมัติ (4 cols)
 - รองรับไฟล์ที่ header อยู่ใน data row (ไม่ใช่ Excel header row)
 - Map category จากไฟล์ผู้ใช้ → CATEGORIES ของเรา
 - รองรับ ค.ศ. / พ.ศ. / "ปี XXXX" / datetime
