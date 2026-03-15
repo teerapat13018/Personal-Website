@@ -4279,17 +4279,25 @@ def _cached_generate_timeline(name: str, tavily_key: str, groq_key: str):
 
 
 def _render_timeline_chart(ticker_input: str, events) -> None:
-    """กราฟราคาหุ้น (area) พร้อม Tier 2 event markers จาก timeline โดยตรง
-    Tier 2A = product / pivot / expansion / milestone (cyan)
-    Tier 2B = acquisition (purple)
+    """กราฟราคาหุ้น (area) + ทุก event
+    แบบ B — visual weight:
+      Tier 2 (product/pivot/expansion/milestone/acquisition) = circle ใหญ่ + emoji
+      อื่นๆ (founding/leadership/crisis/ipo/funding/other)   = diamond เล็ก โปร่งแสง
     """
     import plotly.graph_objects as go
     import pandas as pd
 
-    # ── กรอง Tier 2 เท่านั้น ───────────────────────────────────────────────
+    # ── Category config ────────────────────────────────────────────────────
     TIER_2A = {"product", "pivot", "expansion", "milestone"}
     TIER_2B = {"acquisition"}
-    tier2_events = [e for e in events if e.category in TIER_2A | TIER_2B]
+    TIER_2  = TIER_2A | TIER_2B
+
+    # สีและ emoji ของ Tier 2
+    T2_COLOR = {"product": "#06b6d4", "pivot": "#f97316",
+                "expansion": "#06b6d4", "milestone": "#22c55e",
+                "acquisition": "#a855f7"}
+    T2_EMOJI = {"product": "🚀", "pivot": "🔄", "expansion": "🌍",
+                "milestone": "🏆", "acquisition": "🤝"}
 
     try:
         import yfinance as _yf
@@ -4301,52 +4309,78 @@ def _render_timeline_chart(ticker_input: str, events) -> None:
         st.caption("ไม่พบข้อมูลราคาหุ้น — แสดงเฉพาะ timeline")
         return
 
-    # Resample รายเดือน
-    monthly = hist["Close"].resample("ME").last().dropna()
+    monthly   = hist["Close"].resample("ME").last().dropna()
+    ipo_start = monthly.index[0]
 
     fig = go.Figure()
 
     # ── Area chart ─────────────────────────────────────────────────────────
     fig.add_trace(go.Scatter(
-        x=monthly.index,
-        y=monthly.values,
-        mode="lines",
-        name="ราคาปิด",
+        x=monthly.index, y=monthly.values,
+        mode="lines", name="ราคาปิด",
         line=dict(color="#0ea5e9", width=1.5),
-        fill="tozeroy",
-        fillcolor="rgba(14,165,233,0.08)",
+        fill="tozeroy", fillcolor="rgba(14,165,233,0.08)",
         hovertemplate="%{x|%b %Y}  $%{y:,.2f}<extra></extra>",
     ))
 
-    # ── Tier 2 event markers ───────────────────────────────────────────────
-    COLOR_2A  = "#06b6d4"   # cyan   — Structural Shift
-    COLOR_2B  = "#a855f7"   # purple — M&A / Acquisition
-    ipo_start = monthly.index[0]
+    def _snap(ev):
+        """แปลง event → (date, price) บน monthly index"""
+        month    = ev.month or 6
+        event_dt = pd.Timestamp(year=ev.year, month=month, day=15, tz="UTC")
+        if event_dt < ipo_start:
+            return None, None
+        if event_dt > monthly.index[-1]:
+            event_dt = monthly.index[-1]
+        idx   = monthly.index.get_indexer([event_dt], method="nearest")[0]
+        return monthly.index[idx], float(monthly.iloc[idx])
 
-    for ev in tier2_events:
+    # ── วาด secondary events ก่อน (ทับได้ → Tier 2 จะอยู่บน) ──────────────
+    secondary = [e for e in events if e.category not in TIER_2]
+    for ev in secondary:
         try:
-            month    = ev.month or 6
-            event_dt = pd.Timestamp(year=ev.year, month=month, day=15, tz="UTC")
-            if event_dt < ipo_start:
+            date, price = _snap(ev)
+            if date is None:
                 continue
-            if event_dt > monthly.index[-1]:
-                event_dt = monthly.index[-1]
-            idx   = monthly.index.get_indexer([event_dt], method="nearest")[0]
-            price = monthly.iloc[idx]
-            date  = monthly.index[idx]
+            desc  = ev.description[:120] + "…" if len(ev.description) > 120 else ev.description
+            # diamond เล็ก โปร่งแสง ใช้สีของ category เดิม
+            size  = {1: 6, 2: 8, 3: 10}.get(ev.importance, 8)
+            color_hex = ev.color        # สีจาก CATEGORIES
+            # แปลง hex → rgba โปร่งแสง 55%
+            r, g, b   = int(color_hex[1:3], 16), int(color_hex[3:5], 16), int(color_hex[5:7], 16)
+            fill_rgba = f"rgba({r},{g},{b},0.55)"
+            fig.add_trace(go.Scatter(
+                x=[date], y=[price],
+                mode="markers",
+                marker=dict(size=size, color=fill_rgba, symbol="diamond",
+                            line=dict(color=color_hex, width=1)),
+                hovertemplate=(
+                    f"<b>{ev.icon} {ev.category_label}</b><br>"
+                    f"<b>{ev.date_label}</b><br>"
+                    f"<b>{ev.title}</b><br>"
+                    f"<span style='color:#aaa'>{desc}</span>"
+                    f"<extra></extra>"
+                ),
+                showlegend=False,
+            ))
+        except Exception:
+            continue
 
-            is_2b  = ev.category in TIER_2B
-            color  = COLOR_2B if is_2b else COLOR_2A
-            emoji  = "🤝" if is_2b else "🔷"
-            label  = "Tier 2B · M&A / Acquisition" if is_2b else "Tier 2A · Structural Shift"
-            size   = {1: 10, 2: 14, 3: 18}.get(ev.importance, 14)
-            desc   = ev.description[:150] + "…" if len(ev.description) > 150 else ev.description
-
+    # ── วาด Tier 2 ทับบน (circle ใหญ่ + emoji) ────────────────────────────
+    tier2 = [e for e in events if e.category in TIER_2]
+    for ev in tier2:
+        try:
+            date, price = _snap(ev)
+            if date is None:
+                continue
+            color = T2_COLOR.get(ev.category, "#06b6d4")
+            emoji = T2_EMOJI.get(ev.category, "🔷")
+            label = ev.category_label
+            size  = {1: 10, 2: 14, 3: 18}.get(ev.importance, 14)
+            desc  = ev.description[:150] + "…" if len(ev.description) > 150 else ev.description
             fig.add_trace(go.Scatter(
                 x=[date], y=[price],
                 mode="markers+text",
-                marker=dict(size=size, color=color,
-                            symbol="circle",
+                marker=dict(size=size, color=color, symbol="circle",
                             line=dict(color="#ffffff", width=1.5)),
                 text=[emoji],
                 textposition="top center",
@@ -4367,7 +4401,7 @@ def _render_timeline_chart(ticker_input: str, events) -> None:
         template="plotly_dark",
         paper_bgcolor="#0d0d1a",
         plot_bgcolor="#0d0d1a",
-        height=420,
+        height=440,
         margin=dict(l=10, r=10, t=10, b=10),
         xaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.05)", title=""),
         yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.05)",
@@ -4377,7 +4411,11 @@ def _render_timeline_chart(ticker_input: str, events) -> None:
     )
 
     st.plotly_chart(fig, use_container_width=True)
-    st.caption("🔷 Structural Shift (product / pivot / expansion / milestone)  |  🤝 M&A / Acquisition  |  ขนาดใหญ่ = importance สูง  |  hover ดูรายละเอียด")
+    st.caption(
+        "🚀 Product  🔄 Pivot  🌍 Expansion  🏆 Milestone  🤝 M&A  "
+        "· circle ใหญ่ = Tier 2 (สำคัญ)  · diamond เล็ก = เหตุการณ์อื่น  "
+        "· hover ดูรายละเอียด"
+    )
 
 
 def _render_timeline_tab():
