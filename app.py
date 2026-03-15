@@ -4278,51 +4278,18 @@ def _cached_generate_timeline(name: str, tavily_key: str, groq_key: str):
     return generate_timeline(name, tavily_key, groq_key)
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def _cached_explain_jumps(company_name: str, jumps_info: str, groq_key: str) -> dict:
-    """ให้ Groq คาดเดาสาเหตุของราคาหุ้น โดยใช้ 3-Tier Hierarchy
-    คืน dict {YYYY-MM: {tier, type, reason_th}}"""
-    import json, re
-    try:
-        from groq import Groq
-        client = Groq(api_key=groq_key)
-        prompt = f"""The stock of {company_name} had these significant price moves (market-adjusted):
-{jumps_info}
-
-Classify each date using this News Hierarchy. PRIORITIZE Tier 2 — prefer classifying as Tier 2 unless evidence strongly points to Tier 1 or 3:
-
-- Tier 1: Earnings Surprise / major guidance beat or miss (only if clearly earnings-driven)
-- Tier 2A — Structural Shift: New product architecture, breakthrough technology, platform launch (e.g. new chip generation, OS release, major software platform)
-- Tier 2B — M&A / Partnership: Major acquisition, strategic deal with a tech giant (e.g. Microsoft, AWS, Google), joint venture
-- Tier 3: Macro/Regulatory (Fed rate, export ban, antitrust), CEO change, broad market rotation
-
-Also assign impact_score (1–10) estimating how much this event structurally changed the company's long-term trajectory. Tier 2 events should generally score 6–9.
-
-Return ONLY valid JSON (no markdown). Use "2A" or "2B" as tier value for Tier 2:
-{{
-  "1997-09": {{"tier": 1,  "type": "Earnings Surprise",  "reason_th": "1-2 ประโยคภาษาไทย", "impact_score": 7}},
-  "2007-01": {{"tier": "2A", "type": "Structural Shift", "reason_th": "1-2 ประโยคภาษาไทย", "impact_score": 9}},
-  "2012-04": {{"tier": "2B", "type": "M&A",              "reason_th": "1-2 ประโยคภาษาไทย", "impact_score": 8}}
-}}"""
-        resp = client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=2000,
-        )
-        raw = resp.choices[0].message.content.strip()
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
-        return json.loads(raw)
-    except Exception:
-        return {}
-
-
-def _render_timeline_chart(ticker_input: str, events, groq_key: str = "", company_display: str = "") -> None:
-    """กราฟราคาหุ้น (area) พร้อม event markers + price jump annotations"""
+def _render_timeline_chart(ticker_input: str, events) -> None:
+    """กราฟราคาหุ้น (area) พร้อม Tier 2 event markers จาก timeline โดยตรง
+    Tier 2A = product / pivot / expansion / milestone (cyan)
+    Tier 2B = acquisition (purple)
+    """
     import plotly.graph_objects as go
     import pandas as pd
-    import numpy as np
+
+    # ── กรอง Tier 2 เท่านั้น ───────────────────────────────────────────────
+    TIER_2A = {"product", "pivot", "expansion", "milestone"}
+    TIER_2B = {"acquisition"}
+    tier2_events = [e for e in events if e.category in TIER_2A | TIER_2B]
 
     try:
         import yfinance as _yf
@@ -4335,58 +4302,7 @@ def _render_timeline_chart(ticker_input: str, events, groq_key: str = "", compan
         return
 
     # Resample รายเดือน
-    monthly     = hist["Close"].resample("ME").last().dropna()
-    stock_ret   = monthly.pct_change().dropna() * 100
-
-    # ── Abnormal Return vs S&P500 ──────────────────────────────────────────
-    try:
-        import yfinance as _yf2
-        mkt = _yf2.Ticker("^GSPC").history(period="max")
-        mkt_monthly = mkt["Close"].resample("ME").last().dropna()
-        mkt_ret     = mkt_monthly.pct_change().dropna() * 100
-        common      = stock_ret.index.intersection(mkt_ret.index)
-        ar          = stock_ret.loc[common] - mkt_ret.loc[common]  # Abnormal Return
-    except Exception:
-        ar = stock_ret.copy()
-
-    # ── Z-Score ของ AR (rolling 24 เดือน) ─────────────────────────────────
-    roll_mean = ar.rolling(24, min_periods=6).mean()
-    roll_std  = ar.rolling(24, min_periods=6).std().replace(0, np.nan)
-    z_score   = ((ar - roll_mean) / roll_std).dropna()
-
-    # ── Volume Spike (> 1.5x ค่าเฉลี่ย 12 เดือน) ──────────────────────────
-    try:
-        monthly_vol = hist["Volume"].resample("ME").sum().dropna()
-        vol_ratio   = (monthly_vol / monthly_vol.rolling(12, min_periods=3).mean()).dropna()
-    except Exception:
-        vol_ratio = pd.Series(dtype=float)
-
-    # ── คัดกรอง: |z| > 2 หรือ (|z| > 1.5 และ volume > 1.5x) ──────────────
-    def _vol_at(dt):
-        if dt in vol_ratio.index:
-            return vol_ratio.loc[dt]
-        try:
-            return vol_ratio.iloc[vol_ratio.index.get_indexer([dt], method="nearest")[0]]
-        except Exception:
-            return 1.0
-
-    sig_up   = z_score[( z_score >  2.0) | ((z_score >  1.5) & z_score.index.map(lambda d: _vol_at(d) > 1.5))]
-    sig_down = z_score[( z_score < -2.0) | ((z_score < -1.5) & z_score.index.map(lambda d: _vol_at(d) > 1.5))]
-    top_up   = sig_up.nlargest(8)    # เพิ่มเป็น 8 เพื่อให้เห็น Tier 2 มากขึ้น
-    top_down = sig_down.nsmallest(5)
-    all_jumps_z   = pd.concat([top_up, top_down]).sort_index()
-    all_jumps_pct = stock_ret.reindex(all_jumps_z.index)
-
-    # ── Groq: คาดเดาสาเหตุพร้อม Tier ─────────────────────────────────────
-    jump_reasons: dict = {}
-    if groq_key and len(all_jumps_z) > 0 and company_display:
-        jumps_info = "\n".join(
-            f"- {d.strftime('%Y-%m')}: stock {all_jumps_pct.get(d, 0):+.1f}%, "
-            f"AR z-score={all_jumps_z.loc[d]:.1f}, "
-            f"volume={_vol_at(d):.1f}x avg"
-            for d in all_jumps_z.index
-        )
-        jump_reasons = _cached_explain_jumps(company_display, jumps_info, groq_key)
+    monthly = hist["Close"].resample("ME").last().dropna()
 
     fig = go.Figure()
 
@@ -4402,9 +4318,12 @@ def _render_timeline_chart(ticker_input: str, events, groq_key: str = "", compan
         hovertemplate="%{x|%b %Y}  $%{y:,.2f}<extra></extra>",
     ))
 
-    # ── Timeline event markers ──────────────────────────────────────────────
+    # ── Tier 2 event markers ───────────────────────────────────────────────
+    COLOR_2A  = "#06b6d4"   # cyan   — Structural Shift
+    COLOR_2B  = "#a855f7"   # purple — M&A / Acquisition
     ipo_start = monthly.index[0]
-    for ev in events:
+
+    for ev in tier2_events:
         try:
             month    = ev.month or 6
             event_dt = pd.Timestamp(year=ev.year, month=month, day=15, tz="UTC")
@@ -4415,91 +4334,28 @@ def _render_timeline_chart(ticker_input: str, events, groq_key: str = "", compan
             idx   = monthly.index.get_indexer([event_dt], method="nearest")[0]
             price = monthly.iloc[idx]
             date  = monthly.index[idx]
-            size  = {1: 8, 2: 11, 3: 15}.get(ev.importance, 11)
-            desc  = ev.description[:120] + "…" if len(ev.description) > 120 else ev.description
-            fig.add_trace(go.Scatter(
-                x=[date], y=[price],
-                mode="markers",
-                marker=dict(size=size, color=ev.color,
-                            line=dict(color="#ffffff", width=1.5)),
-                hovertemplate=(
-                    f"<b>{ev.date_label}</b><br>"
-                    f"{ev.icon} {ev.category_label}<br>"
-                    f"<b>{ev.title}</b><br>"
-                    f"<span style='color:#aaa'>{desc}</span>"
-                    f"<extra></extra>"
-                ),
-                showlegend=False,
-            ))
-        except Exception:
-            continue
 
-    # ── Price jump markers — Tier 2A/2B priority styling ──────────────────
-    # สี: Tier1=gold, 2A=cyan(structural), 2B=purple(M&A), 3=grey
-    UP_COLORS   = {1: "#f59e0b", "2A": "#06b6d4", "2B": "#a855f7", 3: "#94a3b8"}
-    DOWN_COLORS = {1: "#b91c1c", "2A": "#0e7490", "2B": "#7e22ce", 3: "#475569"}
-    TIER_EMOJI  = {1: "⭐", "2A": "🔷", "2B": "🤝", 3: "📋"}
-    TIER_LABEL  = {1: "Tier 1 · Earnings", "2A": "Tier 2A · Structural Shift",
-                   "2B": "Tier 2B · M&A/Partnership", 3: "Tier 3 · Macro/Other"}
-
-    # เรียงตาม impact_score (สูงก่อน) เพื่อวาด marker สำคัญทับบน
-    def _impact(key):
-        info = jump_reasons.get(key, {})
-        return int(info.get("impact_score", 5)) if isinstance(info, dict) else 5
-
-    sorted_jumps = sorted(all_jumps_z.items(), key=lambda kv: _impact(
-        monthly.index[monthly.index.get_indexer([kv[0]], method="nearest")[0]].strftime("%Y-%m")
-    ))
-
-    for jump_dt, z_val in sorted_jumps:
-        try:
-            idx   = monthly.index.get_indexer([jump_dt], method="nearest")[0]
-            price = monthly.iloc[idx]
-            date  = monthly.index[idx]
-            key   = date.strftime("%Y-%m")
-            pct   = float(all_jumps_pct.get(jump_dt, 0))
-            is_up = z_val > 0
-            vol_v = _vol_at(jump_dt)
-
-            info         = jump_reasons.get(key, {})
-            tier_raw     = info.get("tier", 3)  if isinstance(info, dict) else 3
-            ev_type      = info.get("type", "")  if isinstance(info, dict) else ""
-            reason       = info.get("reason_th", "ไม่พบข้อมูล") if isinstance(info, dict) else str(info)
-            impact_score = int(info.get("impact_score", 5)) if isinstance(info, dict) else 5
-
-            # Normalise tier key
-            if str(tier_raw) in ("2A", "2B"):
-                tier_key = str(tier_raw)
-            elif str(tier_raw) == "2":
-                tier_key = "2A"
-            else:
-                try:    tier_key = int(tier_raw)
-                except: tier_key = 3
-                tier_key = max(1, min(3, tier_key))
-
-            color  = UP_COLORS.get(tier_key,   "#94a3b8") if is_up else DOWN_COLORS.get(tier_key, "#475569")
-            symbol = "triangle-up"   if is_up else "triangle-down"
-            emoji  = TIER_EMOJI.get(tier_key, "📋")
-            label  = TIER_LABEL.get(tier_key, "Tier 3")
-            # ขนาด marker ตาม impact_score (6–18 px)
-            size   = max(8, min(20, 6 + impact_score))
-            text_p = "top center"    if is_up else "bottom center"
+            is_2b  = ev.category in TIER_2B
+            color  = COLOR_2B if is_2b else COLOR_2A
+            emoji  = "🤝" if is_2b else "🔷"
+            label  = "Tier 2B · M&A / Acquisition" if is_2b else "Tier 2A · Structural Shift"
+            size   = {1: 10, 2: 14, 3: 18}.get(ev.importance, 14)
+            desc   = ev.description[:150] + "…" if len(ev.description) > 150 else ev.description
 
             fig.add_trace(go.Scatter(
                 x=[date], y=[price],
                 mode="markers+text",
-                marker=dict(size=size, color=color, symbol=symbol,
+                marker=dict(size=size, color=color,
+                            symbol="circle",
                             line=dict(color="#ffffff", width=1.5)),
                 text=[emoji],
-                textposition=text_p,
+                textposition="top center",
                 textfont=dict(size=10),
                 hovertemplate=(
                     f"<b>{emoji} {label}</b><br>"
-                    f"<b>{date.strftime('%b %Y')} — ราคา{'ขึ้น' if is_up else 'ลง'} {pct:+.1f}%</b><br>"
-                    f"AR z-score: <b>{z_val:.1f}σ</b> | Volume: <b>{vol_v:.1f}x</b> | Impact: <b>{impact_score}/10</b><br>"
-                    + (f"ประเภท: <b>{ev_type}</b><br>" if ev_type else "")
-                    + f"<b>คาดว่าเกิดจาก:</b><br>"
-                    f"{reason}"
+                    f"<b>{ev.date_label}</b><br>"
+                    f"<b>{ev.title}</b><br>"
+                    f"<span style='color:#aaa'>{desc}</span>"
                     f"<extra></extra>"
                 ),
                 showlegend=False,
@@ -4521,7 +4377,7 @@ def _render_timeline_chart(ticker_input: str, events, groq_key: str = "", compan
     )
 
     st.plotly_chart(fig, use_container_width=True)
-    st.caption("🔵 เหตุการณ์บริษัท  |  ⭐ Tier 1 Earnings  🔷 Tier 2A Structural  🤝 Tier 2B M&A  📋 Tier 3 Macro  |  ขนาดใหญ่ = impact score สูง  |  hover ดูรายละเอียด")
+    st.caption("🔷 Structural Shift (product / pivot / expansion / milestone)  |  🤝 M&A / Acquisition  |  ขนาดใหญ่ = importance สูง  |  hover ดูรายละเอียด")
 
 
 def _render_timeline_tab():
@@ -4613,8 +4469,6 @@ def _render_timeline_tab():
     _render_timeline_chart(
         st.session_state.get("tl_ticker", ""),
         events,
-        groq_key=groq_key,
-        company_display=st.session_state["tl_company"],
     )
 
     st.divider()
