@@ -4272,6 +4272,37 @@ def _val_list_view():
                     st.error(f"ลบไม่สำเร็จ: {_err}")
 
 
+def _events_to_df(events) -> "pd.DataFrame":
+    """แปลง list[TimelineEvent] → DataFrame สำหรับ st.data_editor
+    credibility:
+      🔗 มีแหล่งอ้างอิง  = มี source_url จริง (Tavily article)
+      📖 Wikipedia       = source_name มีคำว่า wikipedia
+      🤖 AI Knowledge    = Groq เติมจาก knowledge ล้วนๆ ไม่มี URL
+    default include: True ถ้า importance >= 2
+    """
+    rows = []
+    for e in events:
+        if e.source_url and e.source_url.startswith("http"):
+            cred = "🔗 มีแหล่งอ้างอิง"
+        elif e.source_name and "wikipedia" in e.source_name.lower():
+            cred = "📖 Wikipedia"
+        elif e.source_name:
+            cred = f"📖 {e.source_name[:35]}"
+        else:
+            cred = "🤖 AI Knowledge"
+
+        rows.append({
+            "✓":            e.importance >= 2,
+            "ปี":           e.year,
+            "เดือน":        e.month if e.month else "",
+            "หัวข้อ":       e.title,
+            "หมวด":         f"{e.icon} {e.category_label}",
+            "★":            "★" * e.importance,
+            "แหล่งข้อมูล": cred,
+        })
+    return pd.DataFrame(rows)
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def _cached_generate_timeline(name: str, tavily_key: str, groq_key: str, business_summary: str = "", sector: str = ""):
     from timeline_engine import generate_timeline
@@ -4458,6 +4489,7 @@ def _render_timeline_tab():
     if "tl_company" not in st.session_state: st.session_state["tl_company"] = ""
     if "tl_error"   not in st.session_state: st.session_state["tl_error"]   = ""
     if "tl_ticker"  not in st.session_state: st.session_state["tl_ticker"]  = ""
+    if "tl_df"      not in st.session_state: st.session_state["tl_df"]      = None
 
     # ── Generate ──────────────────────────────────────────────────────────────
     if generate_btn and ticker_input:
@@ -4486,6 +4518,7 @@ def _render_timeline_tab():
         st.session_state["tl_company"] = f"{company_name} ({ticker_input})"
         st.session_state["tl_error"]   = err
         st.session_state["tl_ticker"]  = ticker_input
+        st.session_state["tl_df"]      = None   # reset → จะสร้าง df ใหม่จาก events
 
     # ── Error ──────────────────────────────────────────────────────────────────
     if st.session_state["tl_error"]:
@@ -4509,16 +4542,58 @@ def _render_timeline_tab():
         unsafe_allow_html=True,
     )
 
+    # ── Event selection table ──────────────────────────────────────────────────
+    # สร้าง DataFrame ครั้งแรก (หรือหลัง generate ใหม่)
+    if st.session_state["tl_df"] is None:
+        st.session_state["tl_df"] = _events_to_df(events)
+
+    with st.expander(f"📋 เลือก Events ที่ต้องการแสดงในกราฟ ({len(events)} events ทั้งหมด)", expanded=True):
+        st.caption(
+            "✓ = แสดงในกราฟและ timeline  |  "
+            "🔗 มีแหล่งอ้างอิง = ข่าวจริง  |  "
+            "📖 Wikipedia = Wikipedia  |  "
+            "🤖 AI Knowledge = Groq เติมจาก knowledge (ตรวจสอบก่อนใช้)"
+        )
+        edited_df = st.data_editor(
+            st.session_state["tl_df"],
+            column_config={
+                "✓":            st.column_config.CheckboxColumn("✓", width="small"),
+                "ปี":           st.column_config.NumberColumn("ปี",   width="small",  format="%d"),
+                "เดือน":        st.column_config.TextColumn("เดือน", width="small"),
+                "หัวข้อ":       st.column_config.TextColumn("หัวข้อ (ไทย)", width="large"),
+                "หมวด":         st.column_config.TextColumn("หมวด",  width="medium"),
+                "★":            st.column_config.TextColumn("★",     width="small"),
+                "แหล่งข้อมูล": st.column_config.TextColumn("แหล่งข้อมูล", width="medium"),
+            },
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            key="tl_editor",
+        )
+        # เก็บ state ล่าสุดไว้ (รักษา checkbox ระหว่าง rerun)
+        st.session_state["tl_df"] = edited_df
+
+        sel_count = int(edited_df["✓"].sum())
+        st.caption(f"เลือกแล้ว {sel_count} / {len(events)} events")
+
+    # กรอง events ตาม checkbox
+    selected_mask   = edited_df["✓"].tolist()
+    selected_events = [e for e, keep in zip(events, selected_mask) if keep]
+
+    if not selected_events:
+        st.warning("ยังไม่ได้เลือก event — ติ๊ก ✓ ในตารางด้านบนเพื่อแสดงผล")
+        return
+
     # ── Stock price chart ──────────────────────────────────────────────────────
     _render_timeline_chart(
         st.session_state.get("tl_ticker", ""),
-        events,
+        selected_events,
     )
 
     st.divider()
 
     # ── Filters ────────────────────────────────────────────────────────────────
-    all_cats_in_data = sorted({e.category for e in events})
+    all_cats_in_data = sorted({e.category for e in selected_events})
     cat_options      = {k: f"{CATEGORIES[k][0]} {CATEGORIES[k][1]}" for k in all_cats_in_data}
 
     fc1, fc2 = st.columns([3, 2])
@@ -4530,8 +4605,8 @@ def _render_timeline_tab():
             format_func = lambda k: cat_options[k],
         )
     with fc2:
-        yr_min_all = min(e.year for e in events)
-        yr_max_all = max(e.year for e in events)
+        yr_min_all = min(e.year for e in selected_events)
+        yr_max_all = max(e.year for e in selected_events)
         if yr_min_all < yr_max_all:
             year_range = st.slider(
                 "ช่วงปี",
@@ -4544,7 +4619,7 @@ def _render_timeline_tab():
 
     # ── Render timeline ────────────────────────────────────────────────────────
     html = render_timeline_html(
-        events,
+        selected_events,
         filter_cats = selected_cats if selected_cats else None,
         year_min    = year_range[0],
         year_max    = year_range[1],
