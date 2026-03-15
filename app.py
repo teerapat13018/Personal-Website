@@ -4643,21 +4643,17 @@ def _render_timeline_tab():
 # ─── File Upload Timeline Tab ────────────────────────────────────────────────
 
 def _render_file_timeline_tab(render_timeline_html, CATEGORIES) -> None:
-    """Sub-tab: Upload Excel/CSV → สร้าง Timeline จากข้อมูลของผู้ใช้เอง"""
+    """Sub-tab: Upload Excel/CSV → แสดง Timeline ทันที ทุก event สำคัญหมด"""
     from file_timeline_engine import (
-        parse_uploaded_file, detect_date_event_cols,
-        df_to_events, keyword_category,
+        parse_uploaded_file, detect_date_event_cols, df_to_events,
     )
-    from timeline_engine import TimelineEvent
 
-    st.caption("อัพโหลด Excel/CSV ที่มีตารางวันที่ + ชื่อเหตุการณ์ → แสดง Timeline ทันที ไม่ต้องใช้ API")
+    st.caption("อัพโหลด Excel/CSV → ระบบตรวจจับคอลัมน์อัตโนมัติ → แสดง Timeline ทันที")
 
-    # ── Session state ──────────────────────────────────────────────────────
-    for _k, _v in [("ft_events", []), ("ft_df", None), ("ft_ticker", "")]:
-        if _k not in st.session_state:
-            st.session_state[_k] = _v
+    if "ft_ticker" not in st.session_state:
+        st.session_state["ft_ticker"] = ""
 
-    # ── Upload ─────────────────────────────────────────────────────────────
+    # ── Upload + Ticker ────────────────────────────────────────────────────
     up_col, ticker_col = st.columns([3, 1])
     uploaded = up_col.file_uploader(
         "อัพโหลดไฟล์", type=["xlsx", "xls", "csv"],
@@ -4684,108 +4680,44 @@ def _render_file_timeline_tab(render_timeline_html, CATEGORIES) -> None:
         return
 
     # ── Column detection ───────────────────────────────────────────────────
-    auto_date, auto_event = detect_date_event_cols(df)
+    auto_date, auto_event, auto_cat, auto_desc = detect_date_event_cols(df)
     all_cols = list(df.columns)
+    none_opt = "(ไม่มี)"
 
-    with st.expander("⚙️ ตั้งค่าคอลัมน์ (ระบบตรวจจับอัตโนมัติ)", expanded=False):
-        c1, c2, c3 = st.columns(3)
-        date_col = c1.selectbox(
-            "คอลัมน์วันที่", all_cols,
-            index=all_cols.index(auto_date) if auto_date in all_cols else 0,
-        )
-        event_col = c2.selectbox(
-            "คอลัมน์เหตุการณ์", all_cols,
-            index=all_cols.index(auto_event) if auto_event in all_cols else min(1, len(all_cols)-1),
-        )
-        desc_options = ["(ไม่มี)"] + all_cols
-        desc_col_sel = c3.selectbox("คอลัมน์รายละเอียด (optional)", desc_options)
-        desc_col = None if desc_col_sel == "(ไม่มี)" else desc_col_sel
+    def _col_idx(col):
+        return all_cols.index(col) if col and col in all_cols else 0
+    def _opt_idx(col):
+        opts = [none_opt] + all_cols
+        return opts.index(col) if col and col in opts else 0
 
-    # ── Parse events ───────────────────────────────────────────────────────
-    raw_events = df_to_events(df, date_col, event_col, desc_col)
+    # ค่าเริ่มต้นจาก auto-detect
+    date_col, event_col, cat_col, desc_col = auto_date, auto_event, auto_cat, auto_desc
 
-    if not raw_events:
-        st.warning("ไม่พบข้อมูลที่ parse ได้ — ตรวจสอบคอลัมน์วันที่และเหตุการณ์")
+    with st.expander("⚙️ คอลัมน์ที่ตรวจจับได้ (คลิกเพื่อแก้ไข)", expanded=False):
+        c1, c2, c3, c4 = st.columns(4)
+        date_col  = c1.selectbox("วันที่",      all_cols,           index=_col_idx(auto_date))
+        event_col = c2.selectbox("เหตุการณ์",   all_cols,           index=_col_idx(auto_event))
+        _cat_sel  = c3.selectbox("ประเภท",      [none_opt]+all_cols, index=_opt_idx(auto_cat))
+        _desc_sel = c4.selectbox("รายละเอียด",  [none_opt]+all_cols, index=_opt_idx(auto_desc))
+        cat_col  = None if _cat_sel  == none_opt else _cat_sel
+        desc_col = None if _desc_sel == none_opt else _desc_sel
+
+    # ── Parse → events ─────────────────────────────────────────────────────
+    events = df_to_events(df, date_col, event_col, cat_col=cat_col, desc_col=desc_col)
+
+    if not events:
+        st.warning("ไม่พบข้อมูลที่ parse ได้ — ลองเปิด ⚙️ เพื่อตรวจสอบคอลัมน์")
         return
 
-    # ── Editable table ─────────────────────────────────────────────────────
-    cat_keys   = list(CATEGORIES.keys())
-    cat_labels = {k: f"{CATEGORIES[k][0]} {CATEGORIES[k][1]}" for k in cat_keys}
-
-    # Build df for editor — rebuild ถ้า events เปลี่ยน (ไฟล์ใหม่)
-    if st.session_state["ft_df"] is None or len(st.session_state["ft_df"]) != len(raw_events):
-        rows = []
-        for e in raw_events:
-            rows.append({
-                "✓":        True,
-                "ปี":       e.year,
-                "เดือน":    e.month if e.month else "",
-                "หัวข้อ":   e.title,
-                "รายละเอียด": e.description,
-                "หมวด":     e.category,
-                "★":        e.importance,
-            })
-        st.session_state["ft_df"] = pd.DataFrame(rows)
-
-    with st.expander(f"📋 ตรวจสอบและแก้ไข Events ({len(raw_events)} รายการ)", expanded=True):
-        st.caption(
-            "แก้ไขหมวดหมู่ ความสำคัญ หรือยกเลิกติ๊ก ✓ เพื่อซ่อน event จาก timeline"
-        )
-        edited = st.data_editor(
-            st.session_state["ft_df"],
-            column_config={
-                "✓":          st.column_config.CheckboxColumn("✓", width="small"),
-                "ปี":         st.column_config.NumberColumn("ปี",  width="small", format="%d"),
-                "เดือน":      st.column_config.TextColumn("เดือน", width="small"),
-                "หัวข้อ":     st.column_config.TextColumn("หัวข้อ", width="large"),
-                "รายละเอียด": st.column_config.TextColumn("รายละเอียด", width="large"),
-                "หมวด":       st.column_config.SelectboxColumn(
-                    "หมวด", width="medium",
-                    options=cat_keys,
-                ),
-                "★":          st.column_config.NumberColumn(
-                    "★ ความสำคัญ", width="small",
-                    min_value=1, max_value=3, step=1,
-                ),
-            },
-            use_container_width=True,
-            hide_index=True,
-            num_rows="fixed",
-            key="ft_editor",
-        )
-        st.session_state["ft_df"] = edited
-        sel_count = int(edited["✓"].sum())
-        st.caption(f"เลือกแล้ว {sel_count} / {len(raw_events)} events")
-
-    # ── Build selected TimelineEvent list ──────────────────────────────────
-    selected_events: list[TimelineEvent] = []
-    for _, row in edited[edited["✓"]].iterrows():
-        yr = row["ปี"]
-        if not yr or pd.isna(yr):
-            continue
-        mo_raw = row["เดือน"]
-        mo = int(mo_raw) if mo_raw and str(mo_raw).isdigit() else None
-        selected_events.append(TimelineEvent(
-            year        = int(yr),
-            month       = mo,
-            title       = str(row["หัวข้อ"]),
-            description = str(row["รายละเอียด"]) if row["รายละเอียด"] else "",
-            category    = row["หมวด"] if row["หมวด"] in CATEGORIES else "other",
-            importance  = int(row["★"]) if row["★"] in (1, 2, 3) else 2,
-        ))
-    selected_events.sort(key=lambda e: (e.year, e.month or 0))
-
-    if not selected_events:
-        st.warning("ยังไม่ได้เลือก event — ติ๊ก ✓ ในตารางด้านบน")
-        return
+    st.caption(f"พบ **{len(events)}** events · {min(e.year for e in events)} – {max(e.year for e in events)}")
 
     # ── Stock chart ────────────────────────────────────────────────────────
     if ft_ticker:
-        _render_timeline_chart(ft_ticker, selected_events)
+        _render_timeline_chart(ft_ticker, events)
         st.divider()
 
-    # ── Timeline filters ───────────────────────────────────────────────────
-    all_cats = sorted({e.category for e in selected_events})
+    # ── Filter (ประเภท + ช่วงปี เท่านั้น) ─────────────────────────────────
+    all_cats = sorted({e.category for e in events})
     cat_opts = {k: f"{CATEGORIES[k][0]} {CATEGORIES[k][1]}" for k in all_cats}
     fc1, fc2 = st.columns([3, 2])
     with fc1:
@@ -4796,14 +4728,16 @@ def _render_file_timeline_tab(render_timeline_html, CATEGORIES) -> None:
             key="ft_cats",
         )
     with fc2:
-        yr_min = min(e.year for e in selected_events)
-        yr_max = max(e.year for e in selected_events)
-        yr_range = st.slider("ช่วงปี", yr_min, yr_max, (yr_min, yr_max), key="ft_yr") \
-                   if yr_min < yr_max else (yr_min, yr_max)
+        yr_min = min(e.year for e in events)
+        yr_max = max(e.year for e in events)
+        yr_range = (
+            st.slider("ช่วงปี", yr_min, yr_max, (yr_min, yr_max), key="ft_yr")
+            if yr_min < yr_max else (yr_min, yr_max)
+        )
 
     # ── Render timeline ────────────────────────────────────────────────────
     html = render_timeline_html(
-        selected_events,
+        events,
         filter_cats = sel_cats or None,
         year_min    = yr_range[0],
         year_max    = yr_range[1],
