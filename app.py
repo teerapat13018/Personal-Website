@@ -4555,49 +4555,8 @@ def _render_timeline_tab():
         unsafe_allow_html=True,
     )
 
-    # ── Event selection table ──────────────────────────────────────────────────
-    # สร้าง DataFrame ครั้งแรก (หรือหลัง generate ใหม่)
-    if st.session_state["tl_df"] is None:
-        st.session_state["tl_df"] = _events_to_df(events)
-
-    with st.expander(f"📋 เลือก Events ที่ต้องการแสดงในกราฟ ({len(events)} events ทั้งหมด)", expanded=True):
-        st.caption(
-            "✓ = แสดงในกราฟและ timeline  |  "
-            "🔗 มีแหล่งอ้างอิง = ข่าวจริง  |  "
-            "📖 Wikipedia = Wikipedia  |  "
-            "🤖 AI Knowledge = Groq เติมจาก knowledge (ตรวจสอบก่อนใช้)"
-        )
-        edited_df = st.data_editor(
-            st.session_state["tl_df"],
-            column_config={
-                "✓":            st.column_config.CheckboxColumn("✓", width="small"),
-                "ปี":           st.column_config.NumberColumn("ปี",   width="small",  format="%d"),
-                "เดือน":        st.column_config.TextColumn("เดือน", width="small"),
-                "หัวข้อ":       st.column_config.TextColumn("หัวข้อ (ไทย)", width="large"),
-                "หมวด":         st.column_config.TextColumn("หมวด",  width="medium"),
-                "★":            st.column_config.TextColumn("★",     width="small"),
-                "แหล่งข้อมูล": st.column_config.TextColumn("แหล่งข้อมูล", width="medium"),
-            },
-            use_container_width=True,
-            hide_index=True,
-            num_rows="fixed",
-            key="tl_editor",
-        )
-        # เก็บ state ล่าสุดไว้ (รักษา checkbox ระหว่าง rerun)
-        st.session_state["tl_df"] = edited_df
-
-        sel_count = int(edited_df["✓"].sum())
-        st.caption(f"เลือกแล้ว {sel_count} / {len(events)} events")
-
-    # กรอง events ตาม checkbox
-    selected_mask   = edited_df["✓"].tolist()
-    selected_events = [e for e, keep in zip(events, selected_mask) if keep]
-
-    if not selected_events:
-        st.warning("ยังไม่ได้เลือก event — ติ๊ก ✓ ในตารางด้านบนเพื่อแสดงผล")
-        return
-
     # ── Stock price chart ──────────────────────────────────────────────────────
+    selected_events = events
     _render_timeline_chart(
         st.session_state.get("tl_ticker", ""),
         selected_events,
@@ -4650,73 +4609,55 @@ def _render_file_timeline_tab(render_timeline_html, CATEGORIES) -> None:
 
     st.caption("อัพโหลด Excel/CSV → ระบบตรวจจับคอลัมน์อัตโนมัติ → แสดง Timeline ทันที")
 
-    if "ft_ticker" not in st.session_state:
-        st.session_state["ft_ticker"] = ""
+    # ── Session state ──────────────────────────────────────────────────────
+    for _k, _v in [("ft_events", []), ("ft_ticker_used", "")]:
+        if _k not in st.session_state:
+            st.session_state[_k] = _v
 
-    # ── Upload + Ticker ────────────────────────────────────────────────────
-    up_col, ticker_col = st.columns([3, 1])
-    uploaded = up_col.file_uploader(
-        "อัพโหลดไฟล์", type=["xlsx", "xls", "csv"],
-        label_visibility="collapsed",
+    # ── Input row: file + ticker + button ─────────────────────────────────
+    up_col, ticker_col, btn_col = st.columns([3, 1, 1])
+    uploaded  = up_col.file_uploader(
+        "ไฟล์", type=["xlsx", "xls", "csv"], label_visibility="collapsed",
     )
     ft_ticker = ticker_col.text_input(
-        "Ticker (สำหรับกราฟหุ้น)",
-        value=st.session_state["ft_ticker"],
-        placeholder="เช่น AAPL",
+        "Ticker", placeholder="เช่น NVDA", label_visibility="collapsed",
     ).upper().strip()
-    st.session_state["ft_ticker"] = ft_ticker
+    generate  = btn_col.button("📊 Generate", type="primary", use_container_width=True)
 
     if not uploaded:
-        st.info("💡 อัพโหลด Excel หรือ CSV ที่มีคอลัมน์วันที่และชื่อเหตุการณ์")
+        st.info("💡 อัพโหลด Excel/CSV แล้วกด Generate")
         return
 
-    # ── Parse file ─────────────────────────────────────────────────────────
-    df, err = parse_uploaded_file(uploaded)
-    if err:
-        st.error(err)
-        return
-    if df.empty:
-        st.warning("ไฟล์ว่างเปล่า หรือไม่มีข้อมูล")
-        return
+    # ── Process เมื่อกด Generate เท่านั้น ─────────────────────────────────
+    if generate:
+        df, err = parse_uploaded_file(uploaded)
+        if err:
+            st.error(err)
+            return
+        if df.empty:
+            st.warning("ไฟล์ว่างเปล่า")
+            return
+        date_col, event_col, cat_col, desc_col = detect_date_event_cols(df)
+        events = df_to_events(df, date_col, event_col, cat_col=cat_col, desc_col=desc_col)
+        if not events:
+            st.warning("ไม่พบข้อมูลที่ parse ได้")
+            return
+        st.session_state["ft_events"]      = events
+        st.session_state["ft_ticker_used"] = ft_ticker
 
-    # ── Column detection ───────────────────────────────────────────────────
-    auto_date, auto_event, auto_cat, auto_desc = detect_date_event_cols(df)
-    all_cols = list(df.columns)
-    none_opt = "(ไม่มี)"
-
-    def _col_idx(col):
-        return all_cols.index(col) if col and col in all_cols else 0
-    def _opt_idx(col):
-        opts = [none_opt] + all_cols
-        return opts.index(col) if col and col in opts else 0
-
-    # ค่าเริ่มต้นจาก auto-detect
-    date_col, event_col, cat_col, desc_col = auto_date, auto_event, auto_cat, auto_desc
-
-    with st.expander("⚙️ คอลัมน์ที่ตรวจจับได้ (คลิกเพื่อแก้ไข)", expanded=False):
-        c1, c2, c3, c4 = st.columns(4)
-        date_col  = c1.selectbox("วันที่",      all_cols,           index=_col_idx(auto_date))
-        event_col = c2.selectbox("เหตุการณ์",   all_cols,           index=_col_idx(auto_event))
-        _cat_sel  = c3.selectbox("ประเภท",      [none_opt]+all_cols, index=_opt_idx(auto_cat))
-        _desc_sel = c4.selectbox("รายละเอียด",  [none_opt]+all_cols, index=_opt_idx(auto_desc))
-        cat_col  = None if _cat_sel  == none_opt else _cat_sel
-        desc_col = None if _desc_sel == none_opt else _desc_sel
-
-    # ── Parse → events ─────────────────────────────────────────────────────
-    events = df_to_events(df, date_col, event_col, cat_col=cat_col, desc_col=desc_col)
-
+    # ── Render ─────────────────────────────────────────────────────────────
+    events = st.session_state["ft_events"]
     if not events:
-        st.warning("ไม่พบข้อมูลที่ parse ได้ — ลองเปิด ⚙️ เพื่อตรวจสอบคอลัมน์")
         return
 
+    ticker_used = st.session_state["ft_ticker_used"]
     st.caption(f"พบ **{len(events)}** events · {min(e.year for e in events)} – {max(e.year for e in events)}")
 
-    # ── Stock chart ────────────────────────────────────────────────────────
-    if ft_ticker:
-        _render_timeline_chart(ft_ticker, events)
+    if ticker_used:
+        _render_timeline_chart(ticker_used, events)
         st.divider()
 
-    # ── Filter (ประเภท + ช่วงปี เท่านั้น) ─────────────────────────────────
+    # ── Filter ─────────────────────────────────────────────────────────────
     all_cats = sorted({e.category for e in events})
     cat_opts = {k: f"{CATEGORIES[k][0]} {CATEGORIES[k][1]}" for k in all_cats}
     fc1, fc2 = st.columns([3, 2])
