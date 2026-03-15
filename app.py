@@ -4278,10 +4278,39 @@ def _cached_generate_timeline(name: str, tavily_key: str, groq_key: str):
     return generate_timeline(name, tavily_key, groq_key)
 
 
-def _render_timeline_chart(ticker_input: str, events) -> None:
-    """กราฟราคาหุ้น (area) พร้อม event markers จาก timeline"""
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_explain_jumps(company_name: str, jumps_info: str, groq_key: str) -> dict:
+    """ให้ Groq คาดเดาสาเหตุของราคาหุ้นที่กระโดดขึ้น — คืน dict {YYYY-MM: reason_th}"""
+    import json, re
+    try:
+        from groq import Groq
+        client = Groq(api_key=groq_key)
+        prompt = f"""The stock of {company_name} had these significant price jumps:
+{jumps_info}
+
+For each date, write 1-2 sentences in Thai explaining the most likely cause of the price jump.
+Use your knowledge of the company's history.
+Return ONLY a valid JSON object like: {{"1997-09": "สาเหตุ...", "2007-01": "สาเหตุ..."}}
+No markdown, no explanation outside JSON."""
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=1500,
+        )
+        raw = resp.choices[0].message.content.strip()
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        return json.loads(raw)
+    except Exception:
+        return {}
+
+
+def _render_timeline_chart(ticker_input: str, events, groq_key: str = "", company_display: str = "") -> None:
+    """กราฟราคาหุ้น (area) พร้อม event markers + price jump annotations"""
     import plotly.graph_objects as go
     import pandas as pd
+    import numpy as np
 
     try:
         import yfinance as _yf
@@ -4293,12 +4322,32 @@ def _render_timeline_chart(ticker_input: str, events) -> None:
         st.caption("ไม่พบข้อมูลราคาหุ้น — แสดงเฉพาะ timeline")
         return
 
-    # Resample รายเดือน เพื่อให้ chart เบาและสวย
+    # Resample รายเดือน
     monthly = hist["Close"].resample("ME").last().dropna()
+
+    # ── ตรวจจับ price jumps (ขึ้น + ลง) ────────────────────────────────────
+    returns = monthly.pct_change().dropna() * 100
+    mean_r, std_r = returns.mean(), returns.std()
+    # ขึ้น: > 8% และ > mean + 1.5*std
+    up_mask   = (returns >  8) & (returns >  mean_r + 1.5 * std_r)
+    # ลง: < -8% และ < mean - 1.5*std
+    down_mask = (returns < -8) & (returns <  mean_r - 1.5 * std_r)
+    top_up    = returns[up_mask].nlargest(5)
+    top_down  = returns[down_mask].nsmallest(5)
+    all_jumps = pd.concat([top_up, top_down]).sort_index()
+
+    # ขอ Groq คาดเดาสาเหตุ
+    jump_reasons: dict = {}
+    if groq_key and len(all_jumps) > 0 and company_display:
+        jumps_info = "\n".join(
+            f"- {d.strftime('%Y-%m')}: {pct:+.1f}%"
+            for d, pct in all_jumps.items()
+        )
+        jump_reasons = _cached_explain_jumps(company_display, jumps_info, groq_key)
 
     fig = go.Figure()
 
-    # ── Area chart ราคาหุ้น ──────────────────────────────────────────────────
+    # ── Area chart ─────────────────────────────────────────────────────────
     fig.add_trace(go.Scatter(
         x=monthly.index,
         y=monthly.values,
@@ -4310,24 +4359,21 @@ def _render_timeline_chart(ticker_input: str, events) -> None:
         hovertemplate="%{x|%b %Y}  $%{y:,.2f}<extra></extra>",
     ))
 
-    # ── Event markers ─────────────────────────────────────────────────────────
+    # ── Timeline event markers ──────────────────────────────────────────────
     ipo_start = monthly.index[0]
     for ev in events:
         try:
-            month      = ev.month or 6
-            event_dt   = pd.Timestamp(year=ev.year, month=month, day=15, tz="UTC")
+            month    = ev.month or 6
+            event_dt = pd.Timestamp(year=ev.year, month=month, day=15, tz="UTC")
             if event_dt < ipo_start:
-                continue                                  # ก่อน IPO ข้ามได้
+                continue
             if event_dt > monthly.index[-1]:
                 event_dt = monthly.index[-1]
-
             idx   = monthly.index.get_indexer([event_dt], method="nearest")[0]
             price = monthly.iloc[idx]
             date  = monthly.index[idx]
-
             size  = {1: 8, 2: 11, 3: 15}.get(ev.importance, 11)
             desc  = ev.description[:120] + "…" if len(ev.description) > 120 else ev.description
-
             fig.add_trace(go.Scatter(
                 x=[date], y=[price],
                 mode="markers",
@@ -4345,11 +4391,44 @@ def _render_timeline_chart(ticker_input: str, events) -> None:
         except Exception:
             continue
 
+    # ── Price jump markers (ขึ้น ⚡ / ลง 🔻) ──────────────────────────────
+    for jump_dt, pct in all_jumps.items():
+        try:
+            idx    = monthly.index.get_indexer([jump_dt], method="nearest")[0]
+            price  = monthly.iloc[idx]
+            date   = monthly.index[idx]
+            key    = date.strftime("%Y-%m")
+            reason = jump_reasons.get(key, "ไม่พบข้อมูลเพิ่มเติม")
+            is_up  = pct > 0
+            color  = "#f59e0b" if is_up else "#ef4444"
+            symbol = "triangle-up" if is_up else "triangle-down"
+            label  = "⚡" if is_up else "🔻"
+            text_p = "top center" if is_up else "bottom center"
+            fig.add_trace(go.Scatter(
+                x=[date], y=[price],
+                mode="markers+text",
+                marker=dict(size=14, color=color, symbol=symbol,
+                            line=dict(color="#ffffff", width=1.5)),
+                text=[label],
+                textposition=text_p,
+                textfont=dict(size=12),
+                hovertemplate=(
+                    f"<b>{label} ราคา{'กระโดดขึ้น' if is_up else 'ร่วงลง'} {pct:+.1f}%</b><br>"
+                    f"{date.strftime('%b %Y')}<br>"
+                    f"<b>คาดว่าเกิดจาก:</b><br>"
+                    f"<span style='color:{'#fcd34d' if is_up else '#fca5a5'}'>{reason}</span>"
+                    f"<extra></extra>"
+                ),
+                showlegend=False,
+            ))
+        except Exception:
+            continue
+
     fig.update_layout(
         template="plotly_dark",
         paper_bgcolor="#0d0d1a",
         plot_bgcolor="#0d0d1a",
-        height=380,
+        height=420,
         margin=dict(l=10, r=10, t=10, b=10),
         xaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.05)", title=""),
         yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.05)",
@@ -4359,7 +4438,7 @@ def _render_timeline_chart(ticker_input: str, events) -> None:
     )
 
     st.plotly_chart(fig, use_container_width=True)
-    st.caption("📍 จุดบนกราฟ = เหตุการณ์สำคัญ  |  hover เพื่อดูรายละเอียด  |  จุดใหญ่ = สำคัญมาก")
+    st.caption("🔵 เหตุการณ์จาก timeline  |  ⚡ ราคาขึ้นแรง  |  🔻 ราคาร่วงแรง  |  hover เพื่อดูสาเหตุที่คาดเดา")
 
 
 def _render_timeline_tab():
@@ -4448,7 +4527,12 @@ def _render_timeline_tab():
     )
 
     # ── Stock price chart ──────────────────────────────────────────────────────
-    _render_timeline_chart(st.session_state.get("tl_ticker", ""), events)
+    _render_timeline_chart(
+        st.session_state.get("tl_ticker", ""),
+        events,
+        groq_key=groq_key,
+        company_display=st.session_state["tl_company"],
+    )
 
     st.divider()
 
