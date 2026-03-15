@@ -247,6 +247,32 @@ def _fetch_wikipedia(company_name: str) -> str:
 # 2. Tavily — web search
 # ─────────────────────────────────────────────
 
+# Sector-specific query templates — ใช้ใน _fetch_tavily() เพื่อเพิ่มความครอบคลุม
+# key = yfinance sector string (exact match), value = query template ({name} จะถูกแทนที่)
+_SECTOR_QUERY: dict[str, str] = {
+    "Technology":              "{name} conference product launch roadmap architecture chip {cy}",
+    "Semiconductors":          "{name} chip architecture GTC CES product launch roadmap {cy}",
+    "Consumer Electronics":    "{name} product launch hardware devices WWDC CES keynote {cy}",
+    "Healthcare":              "{name} FDA approval clinical trial Phase 3 drug pipeline {cy}",
+    "Biotechnology":           "{name} FDA approval clinical trial Phase 2 Phase 3 pipeline {cy}",
+    "Pharmaceuticals":         "{name} FDA approval drug approval pipeline clinical trial {cy}",
+    "Financial Services":      "{name} acquisition merger regulatory fine settlement capital {cy}",
+    "Banks":                   "{name} acquisition merger regulatory capital investment {cy}",
+    "Insurance":               "{name} acquisition merger underwriting regulatory loss {cy}",
+    "Energy":                  "{name} oil gas discovery production capacity refinery expansion {cy}",
+    "Oil & Gas":                "{name} oil gas discovery production capacity exploration {cy}",
+    "Consumer Cyclical":       "{name} store expansion new product market share brand launch {cy}",
+    "Consumer Defensive":      "{name} product launch brand acquisition supply chain expansion {cy}",
+    "Industrials":             "{name} contract manufacturing capacity supply chain aerospace {cy}",
+    "Communication Services":  "{name} spectrum 5G network infrastructure rollout content {cy}",
+    "Real Estate":             "{name} property acquisition development occupancy expansion {cy}",
+    "Utilities":               "{name} plant capacity renewable energy solar wind grid {cy}",
+    "Basic Materials":         "{name} mine acquisition capacity production expansion {cy}",
+    "Transportation":          "{name} fleet route expansion acquisition logistics capacity {cy}",
+}
+_DEFAULT_SECTOR_QUERY = "{name} major announcement product launch acquisition expansion {cy}"
+
+
 def _filter_date_sentences(content: str, max_chars: int = 1_000) -> str:
     """ดึงเฉพาะประโยคที่มีปีอยู่ — ไม่เก็บ intro สองประโยค ไม่ตัดกลางประโยค"""
     sentences = re.split(r"(?<=[a-zA-Z\d])\.\s+(?=[A-Z])", content)
@@ -261,8 +287,8 @@ def _filter_date_sentences(content: str, max_chars: int = 1_000) -> str:
     return " ".join(result)
 
 
-def _fetch_tavily(company_name: str, api_key: str) -> list[dict]:
-    """ดึงข่าว/บทความจาก Tavily แบ่งเป็น early (น้อย) และ recent (เยอะ)"""
+def _fetch_tavily(company_name: str, api_key: str, sector: str = "") -> list[dict]:
+    """ดึงข่าว/บทความจาก Tavily แบ่งเป็น early (น้อย) + recent (เยอะ) + sector-specific (1 query)"""
     from tavily import TavilyClient
     client = TavilyClient(api_key=api_key)
 
@@ -279,10 +305,16 @@ def _fetch_tavily(company_name: str, api_key: str) -> list[dict]:
         (f"{company_name} latest news breakthroughs leadership {cy-1} {cy}", 5),
     ]
 
+    # Sector-specific query — เพิ่ม 1 query ที่ตรงกับ industry ของบริษัท
+    # ช่วยให้ได้ข้อมูล FDA approval / chip architecture / store expansion ฯลฯ ตาม sector
+    sector_template = _SECTOR_QUERY.get(sector) or _DEFAULT_SECTOR_QUERY
+    sector_q = sector_template.format(name=company_name, cy=cy)
+    sector_queries: list[tuple[str, int]] = [(sector_q, 5)]
+
     all_results: list[dict] = []
     seen_urls:   set[str]   = set()
 
-    for q, n in early_queries + recent_queries:
+    for q, n in early_queries + recent_queries + sector_queries:
         try:
             resp = client.search(query=q, search_depth="basic", max_results=n)
             for r in resp.get("results", []):
@@ -336,6 +368,12 @@ Additional rules:
 - Translate ALL text to Thai
 - CRITICAL: MUST include events up to {cy} — never stop before the current year
 - Be SPECIFIC: e.g. "Microsoft Copilot" not "AI assistant", "ซื้อ Activision $68.7B" not "ซื้อบริษัทเกม"
+- CODENAMES: Always use the actual codename/product name when known. Examples:
+    NVDA chips → "Blackwell", "Hopper", "Ampere", "Rubin", "NVLink", "NVSwitch" — NOT "new GPU generation"
+    Apple → "M1", "M2", "M3", "M4", "Vision Pro", "iPhone 15 Pro" — NOT "new chip" or "new phone"
+    AMD → "RDNA 3", "Zen 4", "MI300", "Instinct" — NOT "new GPU"
+    MSFT → "Copilot", "Azure OpenAI", "Teams Premium" — NOT "AI feature"
+    If you do not know the codename, be as specific as possible about specs, pricing, or deal value.
 - If multiple sources describe the SAME event, include it ONLY ONCE (use the most detailed description)
 - Do NOT include near-duplicate events with the same topic in the same year
 - Sort by year ascending
@@ -396,7 +434,7 @@ def _parse_with_groq(
             {"role": "user",   "content": "\n".join(context_parts)},
         ],
         temperature = 0.3,
-        max_tokens  = 6000,
+        max_tokens  = 10_000,
     )
 
     raw = response.choices[0].message.content.strip()
@@ -496,6 +534,7 @@ def generate_timeline(
     tavily_api_key:   str,
     groq_api_key:     str,
     business_summary: str = "",
+    sector:           str = "",
 ) -> tuple[list[TimelineEvent], str]:
     """Main function — คืนค่า (events, error_message)"""
     if not company_name.strip():
@@ -503,7 +542,7 @@ def generate_timeline(
 
     search_name    = _clean_search_name(company_name)
     wiki_text      = _fetch_wikipedia(search_name)
-    tavily_results = _fetch_tavily(search_name, tavily_api_key)
+    tavily_results = _fetch_tavily(search_name, tavily_api_key, sector=sector)
 
     real_results  = [r for r in tavily_results if not r["title"].startswith("[Tavily error")]
     tavily_errors = [r["title"] for r in tavily_results if     r["title"].startswith("[Tavily error")]
