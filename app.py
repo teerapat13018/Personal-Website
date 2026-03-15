@@ -4305,7 +4305,7 @@ Return ONLY valid JSON (no markdown). Use "2A" or "2B" as tier value for Tier 2:
   "2012-04": {{"tier": "2B", "type": "M&A",              "reason_th": "1-2 ประโยคภาษาไทย", "impact_score": 8}}
 }}"""
         resp = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=2000,

@@ -208,7 +208,7 @@ def _parse_with_groq(
     client = Groq(api_key=api_key)
 
     response = client.chat.completions.create(
-        model    = "llama-3.3-70b-versatile",
+        model    = "meta-llama/llama-4-scout-17b-16e-instruct",
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user",   "content": context},
