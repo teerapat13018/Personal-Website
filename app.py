@@ -4280,23 +4280,30 @@ def _cached_generate_timeline(name: str, tavily_key: str, groq_key: str):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _cached_explain_jumps(company_name: str, jumps_info: str, groq_key: str) -> dict:
-    """ให้ Groq คาดเดาสาเหตุของราคาหุ้นที่กระโดดขึ้น — คืน dict {YYYY-MM: reason_th}"""
+    """ให้ Groq คาดเดาสาเหตุของราคาหุ้น โดยใช้ 3-Tier Hierarchy
+    คืน dict {YYYY-MM: {tier, type, reason_th}}"""
     import json, re
     try:
         from groq import Groq
         client = Groq(api_key=groq_key)
-        prompt = f"""The stock of {company_name} had these significant price jumps:
+        prompt = f"""The stock of {company_name} had these significant price moves (with market-adjusted data):
 {jumps_info}
 
-For each date, write 1-2 sentences in Thai explaining the most likely cause of the price jump.
-Use your knowledge of the company's history.
-Return ONLY a valid JSON object like: {{"1997-09": "สาเหตุ...", "2007-01": "สาเหตุ..."}}
-No markdown, no explanation outside JSON."""
+For each date, classify the most likely cause using this News Hierarchy:
+- Tier 1 (Highest): Earnings Surprise / major guidance revision
+- Tier 2 (High): New product/technology launch, major M&A or partnership, structural business shift
+- Tier 3 (Medium): Macro/Regulatory event, CEO/leadership change, sector rotation
+
+Return ONLY valid JSON (no markdown):
+{{
+  "1997-09": {{"tier": 1, "type": "Earnings Surprise", "reason_th": "อธิบาย 1-2 ประโยคภาษาไทย"}},
+  "2007-01": {{"tier": 2, "type": "Product Launch", "reason_th": "อธิบาย 1-2 ประโยคภาษาไทย"}}
+}}"""
         resp = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=1500,
+            max_tokens=2000,
         )
         raw = resp.choices[0].message.content.strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
@@ -4323,25 +4330,56 @@ def _render_timeline_chart(ticker_input: str, events, groq_key: str = "", compan
         return
 
     # Resample รายเดือน
-    monthly = hist["Close"].resample("ME").last().dropna()
+    monthly     = hist["Close"].resample("ME").last().dropna()
+    stock_ret   = monthly.pct_change().dropna() * 100
 
-    # ── ตรวจจับ price jumps (ขึ้น + ลง) ────────────────────────────────────
-    returns = monthly.pct_change().dropna() * 100
-    mean_r, std_r = returns.mean(), returns.std()
-    # ขึ้น: > 8% และ > mean + 1.5*std
-    up_mask   = (returns >  8) & (returns >  mean_r + 1.5 * std_r)
-    # ลง: < -8% และ < mean - 1.5*std
-    down_mask = (returns < -8) & (returns <  mean_r - 1.5 * std_r)
-    top_up    = returns[up_mask].nlargest(5)
-    top_down  = returns[down_mask].nsmallest(5)
-    all_jumps = pd.concat([top_up, top_down]).sort_index()
+    # ── Abnormal Return vs S&P500 ──────────────────────────────────────────
+    try:
+        import yfinance as _yf2
+        mkt = _yf2.Ticker("^GSPC").history(period="max")
+        mkt_monthly = mkt["Close"].resample("ME").last().dropna()
+        mkt_ret     = mkt_monthly.pct_change().dropna() * 100
+        common      = stock_ret.index.intersection(mkt_ret.index)
+        ar          = stock_ret.loc[common] - mkt_ret.loc[common]  # Abnormal Return
+    except Exception:
+        ar = stock_ret.copy()
 
-    # ขอ Groq คาดเดาสาเหตุ
+    # ── Z-Score ของ AR (rolling 24 เดือน) ─────────────────────────────────
+    roll_mean = ar.rolling(24, min_periods=6).mean()
+    roll_std  = ar.rolling(24, min_periods=6).std().replace(0, np.nan)
+    z_score   = ((ar - roll_mean) / roll_std).dropna()
+
+    # ── Volume Spike (> 1.5x ค่าเฉลี่ย 12 เดือน) ──────────────────────────
+    try:
+        monthly_vol = hist["Volume"].resample("ME").sum().dropna()
+        vol_ratio   = (monthly_vol / monthly_vol.rolling(12, min_periods=3).mean()).dropna()
+    except Exception:
+        vol_ratio = pd.Series(dtype=float)
+
+    # ── คัดกรอง: |z| > 2 หรือ (|z| > 1.5 และ volume > 1.5x) ──────────────
+    def _vol_at(dt):
+        if dt in vol_ratio.index:
+            return vol_ratio.loc[dt]
+        try:
+            return vol_ratio.iloc[vol_ratio.index.get_indexer([dt], method="nearest")[0]]
+        except Exception:
+            return 1.0
+
+    sig_up   = z_score[( z_score >  2.0) | ((z_score >  1.5) & z_score.index.map(lambda d: _vol_at(d) > 1.5))]
+    sig_down = z_score[( z_score < -2.0) | ((z_score < -1.5) & z_score.index.map(lambda d: _vol_at(d) > 1.5))]
+    top_up   = sig_up.nlargest(5)
+    top_down = sig_down.nsmallest(5)
+    all_jumps_z   = pd.concat([top_up, top_down]).sort_index()
+    all_jumps_pct = stock_ret.reindex(all_jumps_z.index)
+
+    # ── Groq: คาดเดาสาเหตุพร้อม Tier ─────────────────────────────────────
     jump_reasons: dict = {}
-    if groq_key and len(all_jumps) > 0 and company_display:
+    if groq_key and len(all_jumps_z) > 0 and company_display:
         jumps_info = "\n".join(
-            f"- {d.strftime('%Y-%m')}: {pct:+.1f}%"
-            for d, pct in all_jumps.items()
+            f"- {d.strftime('%Y-%m')}: stock {all_jumps_pct.get(d, 0):+.1f}%, "
+            f"AR z-score={all_jumps_z.loc[d]:.1f}, "
+            f"volume={_vol_at(d):.1f}x avg"
+            for d in all_jumps_z.index
         )
         jump_reasons = _cached_explain_jumps(company_display, jumps_info, groq_key)
 
@@ -4391,32 +4429,50 @@ def _render_timeline_chart(ticker_input: str, events, groq_key: str = "", compan
         except Exception:
             continue
 
-    # ── Price jump markers (ขึ้น ⚡ / ลง 🔻) ──────────────────────────────
-    for jump_dt, pct in all_jumps.items():
+    # ── Price jump markers — Tier-based styling ────────────────────────────
+    # Tier colors: 1=gold/darkred  2=orange/red  3=yellow/pink
+    UP_COLORS   = {1: "#f59e0b", 2: "#fb923c", 3: "#fde68a"}
+    DOWN_COLORS = {1: "#b91c1c", 2: "#ef4444", 3: "#fca5a5"}
+    TIER_SIZES  = {1: 18, 2: 14, 3: 11}
+    TIER_LABELS = {1: "⭐ Tier 1", 2: "⚡ Tier 2", 3: "📋 Tier 3"}
+
+    for jump_dt, z_val in all_jumps_z.items():
         try:
-            idx    = monthly.index.get_indexer([jump_dt], method="nearest")[0]
-            price  = monthly.iloc[idx]
-            date   = monthly.index[idx]
-            key    = date.strftime("%Y-%m")
-            reason = jump_reasons.get(key, "ไม่พบข้อมูลเพิ่มเติม")
-            is_up  = pct > 0
-            color  = "#f59e0b" if is_up else "#ef4444"
-            symbol = "triangle-up" if is_up else "triangle-down"
-            label  = "⚡" if is_up else "🔻"
-            text_p = "top center" if is_up else "bottom center"
+            idx   = monthly.index.get_indexer([jump_dt], method="nearest")[0]
+            price = monthly.iloc[idx]
+            date  = monthly.index[idx]
+            key   = date.strftime("%Y-%m")
+            pct   = float(all_jumps_pct.get(jump_dt, 0))
+            is_up = z_val > 0
+
+            info      = jump_reasons.get(key, {})
+            tier      = int(info.get("tier", 3)) if isinstance(info, dict) else 3
+            ev_type   = info.get("type", "") if isinstance(info, dict) else ""
+            reason    = info.get("reason_th", "ไม่พบข้อมูล") if isinstance(info, dict) else str(info)
+            tier      = max(1, min(3, tier))
+
+            color  = UP_COLORS[tier]   if is_up else DOWN_COLORS[tier]
+            symbol = "triangle-up"     if is_up else "triangle-down"
+            label  = TIER_LABELS[tier]
+            size   = TIER_SIZES[tier]
+            text_p = "top center"      if is_up else "bottom center"
+            vol_v  = _vol_at(jump_dt)
+
             fig.add_trace(go.Scatter(
                 x=[date], y=[price],
                 mode="markers+text",
-                marker=dict(size=14, color=color, symbol=symbol,
+                marker=dict(size=size, color=color, symbol=symbol,
                             line=dict(color="#ffffff", width=1.5)),
-                text=[label],
+                text=[label.split()[0]],   # แค่ emoji
                 textposition=text_p,
-                textfont=dict(size=12),
+                textfont=dict(size=11),
                 hovertemplate=(
-                    f"<b>{label} ราคา{'กระโดดขึ้น' if is_up else 'ร่วงลง'} {pct:+.1f}%</b><br>"
+                    f"<b>{label} — ราคา{'ขึ้น' if is_up else 'ลง'} {pct:+.1f}%</b><br>"
                     f"{date.strftime('%b %Y')}<br>"
-                    f"<b>คาดว่าเกิดจาก:</b><br>"
-                    f"<span style='color:{'#fcd34d' if is_up else '#fca5a5'}'>{reason}</span>"
+                    f"AR z-score: <b>{z_val:.1f}σ</b> | Volume: <b>{vol_v:.1f}x avg</b><br>"
+                    + (f"ประเภท: <b>{ev_type}</b><br>" if ev_type else "")
+                    + f"<b>คาดว่าเกิดจาก:</b><br>"
+                    f"<span style='color:{'#fde68a' if is_up else '#fca5a5'}'>{reason}</span>"
                     f"<extra></extra>"
                 ),
                 showlegend=False,
@@ -4438,7 +4494,7 @@ def _render_timeline_chart(ticker_input: str, events, groq_key: str = "", compan
     )
 
     st.plotly_chart(fig, use_container_width=True)
-    st.caption("🔵 เหตุการณ์จาก timeline  |  ⚡ ราคาขึ้นแรง  |  🔻 ราคาร่วงแรง  |  hover เพื่อดูสาเหตุที่คาดเดา")
+    st.caption("🔵 เหตุการณ์บริษัท  |  ⭐ Tier 1 (Earnings)  ⚡ Tier 2 (Product/M&A)  📋 Tier 3 (Macro)  |  ขนาดใหญ่ = z-score สูง  |  hover ดูรายละเอียด")
 
 
 def _render_timeline_tab():
