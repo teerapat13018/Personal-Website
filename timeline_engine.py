@@ -434,7 +434,7 @@ def _parse_with_groq(
             {"role": "user",   "content": "\n".join(context_parts)},
         ],
         temperature = 0.3,
-        max_tokens  = 10_000,
+        max_tokens  = 8_192,
     )
 
     raw = response.choices[0].message.content.strip()
