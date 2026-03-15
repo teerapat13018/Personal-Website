@@ -4278,6 +4278,90 @@ def _cached_generate_timeline(name: str, tavily_key: str, groq_key: str):
     return generate_timeline(name, tavily_key, groq_key)
 
 
+def _render_timeline_chart(ticker_input: str, events) -> None:
+    """กราฟราคาหุ้น (area) พร้อม event markers จาก timeline"""
+    import plotly.graph_objects as go
+    import pandas as pd
+
+    try:
+        import yfinance as _yf
+        hist = _yf.Ticker(ticker_input).history(period="max")
+        if hist.empty:
+            st.caption("ไม่พบข้อมูลราคาหุ้น — แสดงเฉพาะ timeline")
+            return
+    except Exception:
+        st.caption("ไม่พบข้อมูลราคาหุ้น — แสดงเฉพาะ timeline")
+        return
+
+    # Resample รายเดือน เพื่อให้ chart เบาและสวย
+    monthly = hist["Close"].resample("ME").last().dropna()
+
+    fig = go.Figure()
+
+    # ── Area chart ราคาหุ้น ──────────────────────────────────────────────────
+    fig.add_trace(go.Scatter(
+        x=monthly.index,
+        y=monthly.values,
+        mode="lines",
+        name="ราคาปิด",
+        line=dict(color="#0ea5e9", width=1.5),
+        fill="tozeroy",
+        fillcolor="rgba(14,165,233,0.08)",
+        hovertemplate="%{x|%b %Y}  $%{y:,.2f}<extra></extra>",
+    ))
+
+    # ── Event markers ─────────────────────────────────────────────────────────
+    ipo_start = monthly.index[0]
+    for ev in events:
+        try:
+            month      = ev.month or 6
+            event_dt   = pd.Timestamp(year=ev.year, month=month, day=15, tz="UTC")
+            if event_dt < ipo_start:
+                continue                                  # ก่อน IPO ข้ามได้
+            if event_dt > monthly.index[-1]:
+                event_dt = monthly.index[-1]
+
+            idx   = monthly.index.get_indexer([event_dt], method="nearest")[0]
+            price = monthly.iloc[idx]
+            date  = monthly.index[idx]
+
+            size  = {1: 8, 2: 11, 3: 15}.get(ev.importance, 11)
+            desc  = ev.description[:120] + "…" if len(ev.description) > 120 else ev.description
+
+            fig.add_trace(go.Scatter(
+                x=[date], y=[price],
+                mode="markers",
+                marker=dict(size=size, color=ev.color,
+                            line=dict(color="#ffffff", width=1.5)),
+                hovertemplate=(
+                    f"<b>{ev.date_label}</b><br>"
+                    f"{ev.icon} {ev.category_label}<br>"
+                    f"<b>{ev.title}</b><br>"
+                    f"<span style='color:#aaa'>{desc}</span>"
+                    f"<extra></extra>"
+                ),
+                showlegend=False,
+            ))
+        except Exception:
+            continue
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="#0d0d1a",
+        plot_bgcolor="#0d0d1a",
+        height=380,
+        margin=dict(l=10, r=10, t=10, b=10),
+        xaxis=dict(showgrid=True, gridcolor="#ffffff0d", title=""),
+        yaxis=dict(showgrid=True, gridcolor="#ffffff0d",
+                   title="ราคา (USD)", tickprefix="$"),
+        hovermode="closest",
+        showlegend=False,
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption("📍 จุดบนกราฟ = เหตุการณ์สำคัญ  |  hover เพื่อดูรายละเอียด  |  จุดใหญ่ = สำคัญมาก")
+
+
 def _render_timeline_tab():
     """Tab: สร้าง Timeline เรื่องราวบริษัทจาก web search + Gemini"""
     try:
@@ -4317,6 +4401,7 @@ def _render_timeline_tab():
     if "tl_events"  not in st.session_state: st.session_state["tl_events"]  = []
     if "tl_company" not in st.session_state: st.session_state["tl_company"] = ""
     if "tl_error"   not in st.session_state: st.session_state["tl_error"]   = ""
+    if "tl_ticker"  not in st.session_state: st.session_state["tl_ticker"]  = ""
 
     # ── Generate ──────────────────────────────────────────────────────────────
     if generate_btn and ticker_input:
@@ -4338,6 +4423,7 @@ def _render_timeline_tab():
         st.session_state["tl_events"]  = events
         st.session_state["tl_company"] = f"{company_name} ({ticker_input})"
         st.session_state["tl_error"]   = err
+        st.session_state["tl_ticker"]  = ticker_input
 
     # ── Error ──────────────────────────────────────────────────────────────────
     if st.session_state["tl_error"]:
@@ -4360,6 +4446,11 @@ def _render_timeline_tab():
         f'</div>',
         unsafe_allow_html=True,
     )
+
+    # ── Stock price chart ──────────────────────────────────────────────────────
+    _render_timeline_chart(st.session_state.get("tl_ticker", ""), events)
+
+    st.divider()
 
     # ── Filters ────────────────────────────────────────────────────────────────
     all_cats_in_data = sorted({e.category for e in events})

@@ -115,9 +115,10 @@ def _fetch_tavily(company_name: str, api_key: str) -> list[dict]:
     client = TavilyClient(api_key=api_key)
 
     queries = [
-        f"{company_name} company history founding milestones",
-        f"{company_name} major events product launches funding IPO",
-        f"{company_name} crisis pivot leadership change acquisition",
+        f"{company_name} company founding history early years origin",
+        f"{company_name} major milestones product launches IPO timeline",
+        f"{company_name} acquisitions mergers expansion international growth",
+        f"{company_name} leadership CEO change crisis controversy scandal",
     ]
 
     all_results: list[dict] = []
@@ -161,9 +162,11 @@ Rules:
   funding, leadership, crisis, pivot, milestone, expansion, acquisition, ipo, other),
   source_url (string or ""), source_name (string or ""), importance (1=minor, 2=normal, 3=major turning point)
 - Translate ALL text to Thai
-- Extract 10–25 most important events
+- Extract 20–30 most important events spanning the FULL history from founding to present
+- SPREAD events across ALL decades — do not cluster in one time period
+- If multiple sources describe the SAME event, include it ONLY ONCE (merge into the best description)
+- Do NOT include near-duplicate events with the same topic in the same year
 - Sort by year ascending
-- Do NOT include duplicate events
 - If year is unknown, make your best estimate — do not skip the event
 
 Return format (example):
@@ -275,6 +278,29 @@ def _clean_search_name(company_name: str) -> str:
     return name.strip().strip(",").strip()
 
 
+def _deduplicate_events(events: list[TimelineEvent]) -> list[TimelineEvent]:
+    """ลบ event ซ้ำโดยเปรียบเทียบ year + title similarity"""
+    result: list[TimelineEvent] = []
+    for ev in events:
+        is_dup = False
+        for kept in result:
+            if kept.year == ev.year:
+                t1 = set(kept.title.lower().split())
+                t2 = set(ev.title.lower().split())
+                if t1 and t2:
+                    overlap = len(t1 & t2) / min(len(t1), len(t2))
+                    if overlap >= 0.5:          # คำซ้ำ 50%+ = duplicate
+                        is_dup = True
+                        if ev.importance > kept.importance:
+                            result.remove(kept)
+                            result.append(ev)
+                        break
+        if not is_dup:
+            result.append(ev)
+    result.sort(key=lambda x: (x.year, x.month or 0))
+    return result
+
+
 def generate_timeline(
     company_name:   str,
     tavily_api_key: str,
@@ -314,6 +340,9 @@ def generate_timeline(
 
     if not events:
         return [], "Groq สกัดข้อมูลไม่ได้ — ลองบริษัทที่มีชื่อเสียงมากกว่านี้"
+
+    # Step 3: Deduplication
+    events = _deduplicate_events(events)
 
     return events, ""
 
