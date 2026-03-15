@@ -4273,9 +4273,9 @@ def _val_list_view():
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _cached_generate_timeline(name: str, tavily_key: str, gemini_key: str):
+def _cached_generate_timeline(name: str, tavily_key: str, groq_key: str):
     from timeline_engine import generate_timeline
-    return generate_timeline(name, tavily_key, gemini_key)
+    return generate_timeline(name, tavily_key, groq_key)
 
 
 def _render_timeline_tab():
@@ -4291,15 +4291,17 @@ def _render_timeline_tab():
 
     # ── API Keys ─────────────────────────────────────────────────────────────
     try:
-        tavily_key = str(st.secrets["tavily_api_key"])
+        _tv = st.secrets["tavily_api_key"]
+        tavily_key = str(_tv["tavily_api_key"] if hasattr(_tv, "__getitem__") and not isinstance(_tv, str) else _tv)
     except Exception as _e1:
         st.error(f"❌ ไม่พบ `tavily_api_key` ใน Secrets: {_e1}")
         return
 
     try:
-        gemini_key = str(st.secrets["GOOGLE_API_KEY"])
+        _gk = st.secrets["GROQ_API_KEY"]
+        groq_key = str(_gk["GROQ_API_KEY"] if hasattr(_gk, "__getitem__") and not isinstance(_gk, str) else _gk)
     except Exception as _e2:
-        st.error(f"❌ ไม่พบ `GOOGLE_API_KEY` ใน Secrets: {_e2}")
+        st.error(f"❌ ไม่พบ `GROQ_API_KEY` ใน Secrets: {_e2}")
         return
 
     # ── Input ─────────────────────────────────────────────────────────────────
@@ -4331,7 +4333,7 @@ def _render_timeline_tab():
             events, err = _cached_generate_timeline(
                 f"{company_name} ({ticker_input})",
                 tavily_key,
-                gemini_key,
+                groq_key,
             )
         st.session_state["tl_events"]  = events
         st.session_state["tl_company"] = f"{company_name} ({ticker_input})"

@@ -3,7 +3,7 @@ timeline_engine.py
 ──────────────────
 Company Timeline Generator
 - ดึงข้อมูลจาก Tavily (web search) + Wikipedia API
-- ส่งข้อมูลดิบให้ Gemini จัดหมวดหมู่และแปลเป็นไทย
+- ส่งข้อมูลดิบให้ Groq (Llama) จัดหมวดหมู่และแปลเป็นไทย
 - คืนค่า list of TimelineEvent พร้อม render
 """
 
@@ -147,7 +147,7 @@ def _fetch_tavily(company_name: str, api_key: str) -> list[dict]:
 
 
 # ─────────────────────────────────────────────
-# 3. Gemini — parse & categorize → Thai
+# 3. Groq — parse & categorize → Thai
 # ─────────────────────────────────────────────
 
 _SYSTEM_PROMPT = """
@@ -180,14 +180,14 @@ Return format (example):
 ]
 """
 
-def _parse_with_gemini(
+def _parse_with_groq(
     company_name: str,
     wiki_text: str,
     tavily_results: list[dict],
     api_key: str,
 ) -> list[TimelineEvent]:
-    """ส่งข้อมูลดิบให้ Gemini แปลงเป็น TimelineEvent list"""
-    from google import genai
+    """ส่งข้อมูลดิบให้ Groq (Llama) แปลงเป็น TimelineEvent list"""
+    from groq import Groq
 
     # สร้าง context จาก raw data
     context_parts = [f"Company: {company_name}\n"]
@@ -202,14 +202,19 @@ def _parse_with_gemini(
 
     context = "\n".join(context_parts)
 
-    client = genai.Client(api_key=api_key)
+    client = Groq(api_key=api_key)
 
-    response = client.models.generate_content(
-        model    = "gemini-2.0-flash",
-        contents = f"{_SYSTEM_PROMPT}\n\n{context}",
+    response = client.chat.completions.create(
+        model    = "llama-3.3-70b-versatile",
+        messages = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user",   "content": context},
+        ],
+        temperature = 0.3,
+        max_tokens  = 4096,
     )
 
-    raw = response.text.strip()
+    raw = response.choices[0].message.content.strip()
 
     # Strip markdown code fences if present
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
@@ -273,7 +278,7 @@ def _clean_search_name(company_name: str) -> str:
 def generate_timeline(
     company_name:   str,
     tavily_api_key: str,
-    gemini_api_key: str,
+    groq_api_key:   str,
 ) -> tuple[list[TimelineEvent], str]:
     """
     Main function — คืนค่า (events, error_message)
@@ -299,16 +304,16 @@ def generate_timeline(
 
     tavily_results = real_results
 
-    # Step 2: Parse ด้วย Gemini
+    # Step 2: Parse ด้วย Groq
     try:
-        events = _parse_with_gemini(company_name, wiki_text, tavily_results, gemini_api_key)
+        events = _parse_with_groq(company_name, wiki_text, tavily_results, groq_api_key)
     except json.JSONDecodeError as e:
-        return [], f"Gemini คืนค่า JSON ไม่ถูกต้อง: {e}"
+        return [], f"Groq คืนค่า JSON ไม่ถูกต้อง: {e}"
     except Exception as e:
         return [], f"เกิดข้อผิดพลาด: {e}"
 
     if not events:
-        return [], "Gemini สกัดข้อมูลไม่ได้ — ลองบริษัทที่มีชื่อเสียงมากกว่านี้"
+        return [], "Groq สกัดข้อมูลไม่ได้ — ลองบริษัทที่มีชื่อเสียงมากกว่านี้"
 
     return events, ""
 
