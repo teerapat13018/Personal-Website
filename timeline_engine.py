@@ -318,7 +318,7 @@ then return them as a JSON array. Output ONLY valid JSON — no markdown, no exp
 Each event object must have these fields:
   year (int), month (int or null),
   title_th (Thai string ≤ 10 words),
-  description_th (Thai string, 2–3 sentences — BE SPECIFIC: name the actual product, deal size, person, country),
+  description_th (Thai string, 1 sentence max ~30 words — BE SPECIFIC: name the actual product, deal size, person, country),
   category (one of: founding, product, funding, leadership, crisis, pivot, milestone, expansion, acquisition, ipo, other),
   source_url (string or ""), source_name (string or ""),
   importance (1=minor, 2=normal, 3=major turning point)
