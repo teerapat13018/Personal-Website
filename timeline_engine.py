@@ -335,6 +335,7 @@ TOTAL: You MUST output at least 30 events. Fewer than 25 is a failure.
 If the source text is sparse for a period, use your knowledge to fill gaps — do not leave periods empty.
 
 Additional rules:
+- READ the "Company Overview" section first — it lists ALL business segments; you MUST cover events from EVERY segment mentioned (cloud, healthcare, retail, devices, satellite, finance, etc.)
 - Translate ALL text to Thai
 - CRITICAL: MUST include events up to {cy} — never stop before the current year
 - Be SPECIFIC: e.g. "Microsoft Copilot" not "AI assistant", "ซื้อ Activision $68.7B" not "ซื้อบริษัทเกม"
@@ -362,11 +363,19 @@ def _parse_with_groq(
     wiki_text: str,
     tavily_results: list[dict],
     api_key: str,
+    business_summary: str = "",
 ) -> list[TimelineEvent]:
     """ส่งข้อมูลดิบให้ Groq (Llama) แปลงเป็น TimelineEvent list"""
     from groq import Groq
 
     context_parts = [f"Company: {company_name}\n"]
+
+    # inject business summary เป็น context แรกสุด — Groq รู้จัก segment ทั้งหมดก่อนอ่านอะไร
+    if business_summary:
+        context_parts.append(
+            f"=== Company Overview (from official data) ===\n{business_summary[:2_000]}\n"
+        )
+
     if wiki_text:
         context_parts.append(f"=== Wikipedia (History & Products sections) ===\n{wiki_text}\n")
     for i, r in enumerate(tavily_results[:18]):
@@ -478,9 +487,10 @@ def _deduplicate_events(events: list[TimelineEvent]) -> list[TimelineEvent]:
 
 
 def generate_timeline(
-    company_name:   str,
-    tavily_api_key: str,
-    groq_api_key:   str,
+    company_name:     str,
+    tavily_api_key:   str,
+    groq_api_key:     str,
+    business_summary: str = "",
 ) -> tuple[list[TimelineEvent], str]:
     """Main function — คืนค่า (events, error_message)"""
     if not company_name.strip():
@@ -498,7 +508,10 @@ def generate_timeline(
         return [], f"ไม่พบข้อมูลของบริษัทนี้{err_detail} — ลองปรับ Ticker หรือตรวจสอบ Tavily API key"
 
     try:
-        events = _parse_with_groq(company_name, wiki_text, real_results, groq_api_key)
+        events = _parse_with_groq(
+            company_name, wiki_text, real_results, groq_api_key,
+            business_summary=business_summary,
+        )
     except json.JSONDecodeError as e:
         return [], f"Groq คืนค่า JSON ไม่ถูกต้อง: {e}"
     except Exception as e:

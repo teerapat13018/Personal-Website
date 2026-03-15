@@ -4273,9 +4273,9 @@ def _val_list_view():
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _cached_generate_timeline(name: str, tavily_key: str, groq_key: str):
+def _cached_generate_timeline(name: str, tavily_key: str, groq_key: str, business_summary: str = ""):
     from timeline_engine import generate_timeline
-    return generate_timeline(name, tavily_key, groq_key)
+    return generate_timeline(name, tavily_key, groq_key, business_summary=business_summary)
 
 
 def _render_timeline_chart(ticker_input: str, events) -> None:
@@ -4467,14 +4467,17 @@ def _render_timeline_tab():
                 import yfinance as _yf
                 _tk   = _yf.Ticker(ticker_input)
                 _info = _tk.info or {}
-                company_name = _info.get("longName") or _info.get("shortName") or ticker_input
+                company_name     = _info.get("longName") or _info.get("shortName") or ticker_input
+                business_summary = _info.get("longBusinessSummary", "")
             except Exception:
-                company_name = ticker_input
+                company_name     = ticker_input
+                business_summary = ""
 
             events, err = _cached_generate_timeline(
                 f"{company_name} ({ticker_input})",
                 tavily_key,
                 groq_key,
+                business_summary=business_summary,
             )
         st.session_state["tl_events"]  = events
         st.session_state["tl_company"] = f"{company_name} ({ticker_input})"
