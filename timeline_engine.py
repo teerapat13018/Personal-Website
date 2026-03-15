@@ -243,14 +243,16 @@ Each event object must have these fields:
   source_url (string or ""), source_name (string or ""),
   importance (1=minor, 2=normal, 3=major turning point)
 
-TIME-WEIGHTED extraction rules (CRITICAL):
-- BEFORE {cy - 14} (before ~10 years ago): include ONLY the 8–10 most important events
-  → Only founding, IPO, first major product, biggest acquisition, major pivot/crisis — skip minor ones
-- {cy - 14} to {cy - 5}: include up to 12 events — product lines, expansions, key M&A
-- {cy - 5} to {cy} (last 5 years): include ALL significant events, aim for 10–15 events minimum
-  → Be especially thorough here: AI products, new business lines, leadership changes, major deals
+TIME-WEIGHTED extraction — MANDATORY minimums per period:
+- Period A — founding year to {cy - 14}: extract AT LEAST 8 events
+  → Founding, IPO, first breakthrough product, major crises, biggest deals of each decade
+- Period B — {cy - 14} to {cy - 5}: extract AT LEAST 10 events
+  → Product lines, expansions, key M&A, leadership changes, new markets
+- Period C — {cy - 5} to {cy} (last 5 years): extract AT LEAST 12 events
+  → Be extremely thorough: every significant product launch, partnership, acquisition, earnings milestone
 
-Total target: 30–40 events. Distribution should be roughly 20% historical / 30% mid / 50% recent.
+TOTAL: You MUST output at least 30 events. Fewer than 25 is a failure.
+If the source text is sparse for a period, use your knowledge to fill gaps — do not leave periods empty.
 
 Additional rules:
 - Translate ALL text to Thai
@@ -314,7 +316,22 @@ def _parse_with_groq(
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$",          "", raw)
 
-    events_json: list[dict] = json.loads(raw)
+    # Partial JSON recovery — ถ้า JSON ถูกตัดกลาง (เช่น max_tokens หมด)
+    # ให้ปิด array แล้ว parse เท่าที่มี แทนที่จะ crash ทั้งหมด
+    try:
+        events_json: list[dict] = json.loads(raw)
+    except json.JSONDecodeError:
+        # หา object สมบูรณ์ทั้งหมดใน array ด้วย regex
+        partial = re.findall(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)?\}', raw)
+        recovered: list[dict] = []
+        for chunk in partial:
+            try:
+                recovered.append(json.loads(chunk))
+            except json.JSONDecodeError:
+                continue
+        if not recovered:
+            raise
+        events_json = recovered
 
     events: list[TimelineEvent] = []
     for e in events_json:
