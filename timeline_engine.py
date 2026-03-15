@@ -248,15 +248,12 @@ def _fetch_wikipedia(company_name: str) -> str:
 # ─────────────────────────────────────────────
 
 def _filter_date_sentences(content: str, max_chars: int = 1_000) -> str:
-    """ดึงเฉพาะประโยคที่มีปีอยู่ — ลด token โดยไม่ตัดกลางประโยค"""
+    """ดึงเฉพาะประโยคที่มีปีอยู่ — ไม่เก็บ intro สองประโยค ไม่ตัดกลางประโยค"""
     sentences = re.split(r"(?<=[a-zA-Z\d])\.\s+(?=[A-Z])", content)
-    first_two = sentences[:2]
-    dated     = [s for s in sentences[2:] if _YEAR_PAT.search(s)]
-
-    # FIX: เพิ่มทีละประโยค หยุดก่อนถ้าจะเกิน limit — ไม่ตัดกลางประโยค
+    dated     = [s for s in sentences if _YEAR_PAT.search(s)]
     result: list[str] = []
     total = 0
-    for s in first_two + dated:
+    for s in dated:
         if total + len(s) + 1 > max_chars:
             break
         result.append(s)
@@ -377,10 +374,18 @@ def _parse_with_groq(
         )
 
     if wiki_text:
-        context_parts.append(f"=== Wikipedia (History & Products sections) ===\n{wiki_text}\n")
+        # ถ้ามี business_summary แล้ว ข้าม Wikipedia intro (1,200 chars แรก) เพราะซ้ำกัน
+        wiki_body = wiki_text
+        if business_summary and wiki_text.startswith("[Introduction]"):
+            intro_end = wiki_text.find("\n\n[")
+            wiki_body = wiki_text[intro_end:].lstrip() if intro_end != -1 else wiki_text
+        if wiki_body:
+            context_parts.append(f"=== Wikipedia (History & Products sections) ===\n{wiki_body}\n")
+
     for i, r in enumerate(tavily_results[:18]):
+        # ลบ URL ออกจาก header — Groq ไม่ได้ใช้ URL (ใช้ year-based matching แทน)
         context_parts.append(
-            f"=== Article {i+1}: {r['title']} ({r['url']}) ===\n{r['content']}\n"
+            f"=== Article {i+1}: {r['title']} ===\n{r['content']}\n"
         )
 
     client   = Groq(api_key=api_key)
