@@ -4450,7 +4450,7 @@ def _render_timeline_chart(ticker_input: str, events) -> None:
 
 
 def _render_timeline_tab():
-    """Tab: สร้าง Timeline เรื่องราวบริษัทจาก web search + Gemini"""
+    """Tab: Company Timeline Generator — AI Generate หรือ Upload File"""
     try:
         from timeline_engine import render_timeline_html, CATEGORIES
     except ImportError as _ie:
@@ -4458,7 +4458,20 @@ def _render_timeline_tab():
         return
 
     st.markdown("## 📖 Company Timeline Generator")
-    st.caption("กรอกชื่อบริษัท → ระบบดึงข้อมูลจาก web อัตโนมัติ → แสดง timeline เรื่องราวเป็นภาษาไทย")
+
+    ai_tab, file_tab = st.tabs(["🤖 AI Generate", "📂 Upload File"])
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SUB-TAB: Upload File
+    # ══════════════════════════════════════════════════════════════════════════
+    with file_tab:
+        _render_file_timeline_tab(render_timeline_html, CATEGORIES)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SUB-TAB: AI Generate (เดิม)
+    # ══════════════════════════════════════════════════════════════════════════
+    with ai_tab:
+        st.caption("กรอกชื่อบริษัท → ระบบดึงข้อมูลจาก web อัตโนมัติ → แสดง timeline เรื่องราวเป็นภาษาไทย")
 
     # ── API Keys ─────────────────────────────────────────────────────────────
     try:
@@ -4623,6 +4636,177 @@ def _render_timeline_tab():
         filter_cats = selected_cats if selected_cats else None,
         year_min    = year_range[0],
         year_max    = year_range[1],
+    )
+    st.markdown(html, unsafe_allow_html=True)
+
+
+# ─── File Upload Timeline Tab ────────────────────────────────────────────────
+
+def _render_file_timeline_tab(render_timeline_html, CATEGORIES) -> None:
+    """Sub-tab: Upload Excel/CSV → สร้าง Timeline จากข้อมูลของผู้ใช้เอง"""
+    from file_timeline_engine import (
+        parse_uploaded_file, detect_date_event_cols,
+        df_to_events, keyword_category,
+    )
+    from timeline_engine import TimelineEvent
+
+    st.caption("อัพโหลด Excel/CSV ที่มีตารางวันที่ + ชื่อเหตุการณ์ → แสดง Timeline ทันที ไม่ต้องใช้ API")
+
+    # ── Session state ──────────────────────────────────────────────────────
+    for _k, _v in [("ft_events", []), ("ft_df", None), ("ft_ticker", "")]:
+        if _k not in st.session_state:
+            st.session_state[_k] = _v
+
+    # ── Upload ─────────────────────────────────────────────────────────────
+    up_col, ticker_col = st.columns([3, 1])
+    uploaded = up_col.file_uploader(
+        "อัพโหลดไฟล์", type=["xlsx", "xls", "csv"],
+        label_visibility="collapsed",
+    )
+    ft_ticker = ticker_col.text_input(
+        "Ticker (สำหรับกราฟหุ้น)",
+        value=st.session_state["ft_ticker"],
+        placeholder="เช่น AAPL",
+    ).upper().strip()
+    st.session_state["ft_ticker"] = ft_ticker
+
+    if not uploaded:
+        st.info("💡 อัพโหลด Excel หรือ CSV ที่มีคอลัมน์วันที่และชื่อเหตุการณ์")
+        return
+
+    # ── Parse file ─────────────────────────────────────────────────────────
+    df, err = parse_uploaded_file(uploaded)
+    if err:
+        st.error(err)
+        return
+    if df.empty:
+        st.warning("ไฟล์ว่างเปล่า หรือไม่มีข้อมูล")
+        return
+
+    # ── Column detection ───────────────────────────────────────────────────
+    auto_date, auto_event = detect_date_event_cols(df)
+    all_cols = list(df.columns)
+
+    with st.expander("⚙️ ตั้งค่าคอลัมน์ (ระบบตรวจจับอัตโนมัติ)", expanded=False):
+        c1, c2, c3 = st.columns(3)
+        date_col = c1.selectbox(
+            "คอลัมน์วันที่", all_cols,
+            index=all_cols.index(auto_date) if auto_date in all_cols else 0,
+        )
+        event_col = c2.selectbox(
+            "คอลัมน์เหตุการณ์", all_cols,
+            index=all_cols.index(auto_event) if auto_event in all_cols else min(1, len(all_cols)-1),
+        )
+        desc_options = ["(ไม่มี)"] + all_cols
+        desc_col_sel = c3.selectbox("คอลัมน์รายละเอียด (optional)", desc_options)
+        desc_col = None if desc_col_sel == "(ไม่มี)" else desc_col_sel
+
+    # ── Parse events ───────────────────────────────────────────────────────
+    raw_events = df_to_events(df, date_col, event_col, desc_col)
+
+    if not raw_events:
+        st.warning("ไม่พบข้อมูลที่ parse ได้ — ตรวจสอบคอลัมน์วันที่และเหตุการณ์")
+        return
+
+    # ── Editable table ─────────────────────────────────────────────────────
+    cat_keys   = list(CATEGORIES.keys())
+    cat_labels = {k: f"{CATEGORIES[k][0]} {CATEGORIES[k][1]}" for k in cat_keys}
+
+    # Build df for editor — rebuild ถ้า events เปลี่ยน (ไฟล์ใหม่)
+    if st.session_state["ft_df"] is None or len(st.session_state["ft_df"]) != len(raw_events):
+        rows = []
+        for e in raw_events:
+            rows.append({
+                "✓":        True,
+                "ปี":       e.year,
+                "เดือน":    e.month if e.month else "",
+                "หัวข้อ":   e.title,
+                "รายละเอียด": e.description,
+                "หมวด":     e.category,
+                "★":        e.importance,
+            })
+        st.session_state["ft_df"] = pd.DataFrame(rows)
+
+    with st.expander(f"📋 ตรวจสอบและแก้ไข Events ({len(raw_events)} รายการ)", expanded=True):
+        st.caption(
+            "แก้ไขหมวดหมู่ ความสำคัญ หรือยกเลิกติ๊ก ✓ เพื่อซ่อน event จาก timeline"
+        )
+        edited = st.data_editor(
+            st.session_state["ft_df"],
+            column_config={
+                "✓":          st.column_config.CheckboxColumn("✓", width="small"),
+                "ปี":         st.column_config.NumberColumn("ปี",  width="small", format="%d"),
+                "เดือน":      st.column_config.TextColumn("เดือน", width="small"),
+                "หัวข้อ":     st.column_config.TextColumn("หัวข้อ", width="large"),
+                "รายละเอียด": st.column_config.TextColumn("รายละเอียด", width="large"),
+                "หมวด":       st.column_config.SelectboxColumn(
+                    "หมวด", width="medium",
+                    options=cat_keys,
+                ),
+                "★":          st.column_config.NumberColumn(
+                    "★ ความสำคัญ", width="small",
+                    min_value=1, max_value=3, step=1,
+                ),
+            },
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            key="ft_editor",
+        )
+        st.session_state["ft_df"] = edited
+        sel_count = int(edited["✓"].sum())
+        st.caption(f"เลือกแล้ว {sel_count} / {len(raw_events)} events")
+
+    # ── Build selected TimelineEvent list ──────────────────────────────────
+    selected_events: list[TimelineEvent] = []
+    for _, row in edited[edited["✓"]].iterrows():
+        yr = row["ปี"]
+        if not yr or pd.isna(yr):
+            continue
+        mo_raw = row["เดือน"]
+        mo = int(mo_raw) if mo_raw and str(mo_raw).isdigit() else None
+        selected_events.append(TimelineEvent(
+            year        = int(yr),
+            month       = mo,
+            title       = str(row["หัวข้อ"]),
+            description = str(row["รายละเอียด"]) if row["รายละเอียด"] else "",
+            category    = row["หมวด"] if row["หมวด"] in CATEGORIES else "other",
+            importance  = int(row["★"]) if row["★"] in (1, 2, 3) else 2,
+        ))
+    selected_events.sort(key=lambda e: (e.year, e.month or 0))
+
+    if not selected_events:
+        st.warning("ยังไม่ได้เลือก event — ติ๊ก ✓ ในตารางด้านบน")
+        return
+
+    # ── Stock chart ────────────────────────────────────────────────────────
+    if ft_ticker:
+        _render_timeline_chart(ft_ticker, selected_events)
+        st.divider()
+
+    # ── Timeline filters ───────────────────────────────────────────────────
+    all_cats = sorted({e.category for e in selected_events})
+    cat_opts = {k: f"{CATEGORIES[k][0]} {CATEGORIES[k][1]}" for k in all_cats}
+    fc1, fc2 = st.columns([3, 2])
+    with fc1:
+        sel_cats = st.multiselect(
+            "ประเภท event", options=list(cat_opts.keys()),
+            default=list(cat_opts.keys()),
+            format_func=lambda k: cat_opts[k],
+            key="ft_cats",
+        )
+    with fc2:
+        yr_min = min(e.year for e in selected_events)
+        yr_max = max(e.year for e in selected_events)
+        yr_range = st.slider("ช่วงปี", yr_min, yr_max, (yr_min, yr_max), key="ft_yr") \
+                   if yr_min < yr_max else (yr_min, yr_max)
+
+    # ── Render timeline ────────────────────────────────────────────────────
+    html = render_timeline_html(
+        selected_events,
+        filter_cats = sel_cats or None,
+        year_min    = yr_range[0],
+        year_max    = yr_range[1],
     )
     st.markdown(html, unsafe_allow_html=True)
 
