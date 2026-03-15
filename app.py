@@ -4303,10 +4303,6 @@ def _events_to_df(events) -> "pd.DataFrame":
     return pd.DataFrame(rows)
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def _cached_generate_timeline(name: str, tavily_key: str, groq_key: str, business_summary: str = "", sector: str = ""):
-    from timeline_engine import generate_timeline
-    return generate_timeline(name, tavily_key, groq_key, business_summary=business_summary, sector=sector)
 
 
 def _render_timeline_chart(ticker_input: str, events) -> None:
@@ -4450,153 +4446,15 @@ def _render_timeline_chart(ticker_input: str, events) -> None:
 
 
 def _render_timeline_tab():
-    """Tab: Company Timeline Generator — AI Generate หรือ Upload File"""
+    """Tab: Company Timeline Generator — Upload File"""
     try:
         from timeline_engine import render_timeline_html, CATEGORIES
     except ImportError as _ie:
-        st.error(f"❌ Import error: {_ie} — กรุณาตรวจสอบว่า requirements.txt มี tavily-python และ google-genai แล้ว reboot app")
+        st.error(f"❌ Import error: {_ie}")
         return
 
     st.markdown("## 📖 Company Timeline Generator")
-
-    ai_tab, file_tab = st.tabs(["🤖 AI Generate", "📂 Upload File"])
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # SUB-TAB: Upload File
-    # ══════════════════════════════════════════════════════════════════════════
-    with file_tab:
-        _render_file_timeline_tab(render_timeline_html, CATEGORIES)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # SUB-TAB: AI Generate (เดิม)
-    # ══════════════════════════════════════════════════════════════════════════
-    with ai_tab:
-        st.caption("กรอกชื่อบริษัท → ระบบดึงข้อมูลจาก web อัตโนมัติ → แสดง timeline เรื่องราวเป็นภาษาไทย")
-
-    # ── API Keys ─────────────────────────────────────────────────────────────
-    try:
-        _tv = st.secrets["tavily_api_key"]
-        tavily_key = str(_tv["tavily_api_key"] if hasattr(_tv, "__getitem__") and not isinstance(_tv, str) else _tv)
-    except Exception as _e1:
-        st.error(f"❌ ไม่พบ `tavily_api_key` ใน Secrets: {_e1}")
-        return
-
-    try:
-        _gk = st.secrets["GROQ_API_KEY"]
-        groq_key = str(_gk["GROQ_API_KEY"] if hasattr(_gk, "__getitem__") and not isinstance(_gk, str) else _gk)
-    except Exception as _e2:
-        st.error(f"❌ ไม่พบ `GROQ_API_KEY` ใน Secrets: {_e2}")
-        return
-
-    # ── Input ─────────────────────────────────────────────────────────────────
-    col_inp, col_btn = st.columns([4, 1])
-    ticker_input = col_inp.text_input(
-        "Ticker Symbol",
-        placeholder="เช่น AAPL, TSLA, NVDA, AMZN, MSFT",
-        label_visibility="collapsed",
-    ).upper().strip()
-    generate_btn = col_btn.button("🔍 Generate", type="primary", use_container_width=True)
-
-    # ── Session state ─────────────────────────────────────────────────────────
-    if "tl_events"  not in st.session_state: st.session_state["tl_events"]  = []
-    if "tl_company" not in st.session_state: st.session_state["tl_company"] = ""
-    if "tl_error"   not in st.session_state: st.session_state["tl_error"]   = ""
-    if "tl_ticker"  not in st.session_state: st.session_state["tl_ticker"]  = ""
-    if "tl_df"      not in st.session_state: st.session_state["tl_df"]      = None
-
-    # ── Generate ──────────────────────────────────────────────────────────────
-    if generate_btn and ticker_input:
-        # ดึงชื่อบริษัทจาก yfinance
-        with st.spinner("🔍 กำลังค้นหาข้อมูล..."):
-            try:
-                import yfinance as _yf
-                _tk   = _yf.Ticker(ticker_input)
-                _info = _tk.info or {}
-                company_name     = _info.get("longName") or _info.get("shortName") or ticker_input
-                business_summary = _info.get("longBusinessSummary", "")
-                sector           = _info.get("sector", "")
-            except Exception:
-                company_name     = ticker_input
-                business_summary = ""
-                sector           = ""
-
-            events, err = _cached_generate_timeline(
-                f"{company_name} ({ticker_input})",
-                tavily_key,
-                groq_key,
-                business_summary=business_summary,
-                sector=sector,
-            )
-        st.session_state["tl_events"]  = events
-        st.session_state["tl_company"] = f"{company_name} ({ticker_input})"
-        st.session_state["tl_error"]   = err
-        st.session_state["tl_ticker"]  = ticker_input
-        st.session_state["tl_df"]      = None   # reset → จะสร้าง df ใหม่จาก events
-
-    # ── Error ──────────────────────────────────────────────────────────────────
-    if st.session_state["tl_error"]:
-        st.error(st.session_state["tl_error"])
-        return
-
-    # ── No data yet ────────────────────────────────────────────────────────────
-    events = st.session_state["tl_events"]
-    if not events:
-        st.info("💡 กรอกชื่อบริษัทด้านบนแล้วกด **Generate** เพื่อสร้าง timeline")
-        return
-
-    # ── Summary bar ────────────────────────────────────────────────────────────
-    company_name = st.session_state["tl_company"]
-    years_range  = f"{min(e.year for e in events)} – {max(e.year for e in events)}"
-    st.markdown(
-        f'<div style="background:#12122a;border-radius:10px;padding:12px 18px;margin-bottom:16px;">'
-        f'<span style="font-size:1.1rem;font-weight:700;color:#e8e8f0">{company_name}</span>'
-        f'&nbsp;&nbsp;<span style="color:#888;font-size:0.85rem">{len(events)} events · {years_range}</span>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-
-    # ── Stock price chart ──────────────────────────────────────────────────────
-    selected_events = events
-    _render_timeline_chart(
-        st.session_state.get("tl_ticker", ""),
-        selected_events,
-    )
-
-    st.divider()
-
-    # ── Filters ────────────────────────────────────────────────────────────────
-    all_cats_in_data = sorted({e.category for e in selected_events})
-    cat_options      = {k: f"{CATEGORIES[k][0]} {CATEGORIES[k][1]}" for k in all_cats_in_data}
-
-    fc1, fc2 = st.columns([3, 2])
-    with fc1:
-        selected_cats = st.multiselect(
-            "ประเภท event",
-            options     = list(cat_options.keys()),
-            default     = list(cat_options.keys()),
-            format_func = lambda k: cat_options[k],
-        )
-    with fc2:
-        yr_min_all = min(e.year for e in selected_events)
-        yr_max_all = max(e.year for e in selected_events)
-        if yr_min_all < yr_max_all:
-            year_range = st.slider(
-                "ช่วงปี",
-                min_value = yr_min_all,
-                max_value = yr_max_all,
-                value     = (yr_min_all, yr_max_all),
-            )
-        else:
-            year_range = (yr_min_all, yr_max_all)
-
-    # ── Render timeline ────────────────────────────────────────────────────────
-    html = render_timeline_html(
-        selected_events,
-        filter_cats = selected_cats if selected_cats else None,
-        year_min    = year_range[0],
-        year_max    = year_range[1],
-    )
-    st.markdown(html, unsafe_allow_html=True)
+    _render_file_timeline_tab(render_timeline_html, CATEGORIES)
 
 
 # ─── File Upload Timeline Tab ────────────────────────────────────────────────
