@@ -111,14 +111,20 @@ def _fetch_wikipedia(company_name: str) -> str:
 
 def _fetch_tavily(company_name: str, api_key: str) -> list[dict]:
     """ดึงข่าว/บทความเกี่ยวกับบริษัทจาก Tavily"""
+    import datetime
     from tavily import TavilyClient
     client = TavilyClient(api_key=api_key)
+
+    current_year = datetime.datetime.now().year
+    recent_range = f"{current_year - 4} {current_year - 3} {current_year - 2} {current_year - 1} {current_year}"
 
     queries = [
         f"{company_name} company founding history early years origin",
         f"{company_name} major milestones product launches IPO timeline",
         f"{company_name} acquisitions mergers expansion international growth",
         f"{company_name} leadership CEO change crisis controversy scandal",
+        f"{company_name} new products technology AI innovation {recent_range}",
+        f"{company_name} latest news strategy breakthroughs {current_year - 2} {current_year - 1} {current_year}",
     ]
 
     all_results: list[dict] = []
@@ -151,19 +157,25 @@ def _fetch_tavily(company_name: str, api_key: str) -> list[dict]:
 # 3. Groq — parse & categorize → Thai
 # ─────────────────────────────────────────────
 
-_SYSTEM_PROMPT = """
-You are a business historian assistant.
+def _build_system_prompt() -> str:
+    import datetime
+    current_year = datetime.datetime.now().year
+    return f"""
+You are a business historian assistant. Today's year is {current_year}.
 Your task: extract key historical events about a company from the provided text,
 then return them as a JSON array. Output ONLY valid JSON — no markdown, no explanation.
 
 Rules:
 - Each event must have: year (int), month (int or null), title_th (Thai string ≤ 10 words),
-  description_th (Thai string, 2-3 sentences, informative), category (one of: founding, product,
-  funding, leadership, crisis, pivot, milestone, expansion, acquisition, ipo, other),
+  description_th (Thai string, 2-3 sentences, informative and specific — name the actual product/deal/person),
+  category (one of: founding, product, funding, leadership, crisis, pivot, milestone, expansion, acquisition, ipo, other),
   source_url (string or ""), source_name (string or ""), importance (1=minor, 2=normal, 3=major turning point)
 - Translate ALL text to Thai
-- Extract 20–30 most important events spanning the FULL history from founding to present
+- Extract 30–40 most important events spanning the FULL history from founding to {current_year}
+- CRITICAL: MUST include events from the last 5 years ({current_year - 4}–{current_year}) — do NOT stop at older dates
 - SPREAD events across ALL decades — do not cluster in one time period
+- Prioritise: product launches, acquisitions, pivots, expansions — these make the company's story
+- Be SPECIFIC in description_th: name the actual product (e.g. "Copilot", "Azure", "iPhone 15"), deal size, person, country
 - If multiple sources describe the SAME event, include it ONLY ONCE (merge into the best description)
 - Do NOT include near-duplicate events with the same topic in the same year
 - Sort by year ascending
@@ -171,7 +183,7 @@ Rules:
 
 Return format (example):
 [
-  {
+  {{
     "year": 1994, "month": null,
     "title_th": "ก่อตั้ง Amazon ในโรงรถ",
     "description_th": "Jeff Bezos ลาออกจากงาน Wall Street เพื่อก่อตั้ง Amazon ในโรงรถที่ Bellevue รัฐ Washington โดยเริ่มต้นจากการขายหนังสือออนไลน์ แรงบันดาลใจมาจากการเห็นการเติบโตของอินเทอร์เน็ต 2,300% ต่อปี",
@@ -179,7 +191,7 @@ Return format (example):
     "source_url": "",
     "source_name": "Wikipedia",
     "importance": 3
-  }
+  }}
 ]
 """
 
@@ -196,9 +208,9 @@ def _parse_with_groq(
     context_parts = [f"Company: {company_name}\n"]
 
     if wiki_text:
-        context_parts.append(f"=== Wikipedia ===\n{wiki_text[:6_000]}\n")
+        context_parts.append(f"=== Wikipedia ===\n{wiki_text[:8_000]}\n")
 
-    for i, r in enumerate(tavily_results[:10]):
+    for i, r in enumerate(tavily_results[:16]):
         context_parts.append(
             f"=== Article {i+1}: {r['title']} ({r['url']}) ===\n{r['content']}\n"
         )
@@ -210,11 +222,11 @@ def _parse_with_groq(
     response = client.chat.completions.create(
         model    = "meta-llama/llama-4-scout-17b-16e-instruct",
         messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": _build_system_prompt()},
             {"role": "user",   "content": context},
         ],
         temperature = 0.3,
-        max_tokens  = 4096,
+        max_tokens  = 6000,
     )
 
     raw = response.choices[0].message.content.strip()
