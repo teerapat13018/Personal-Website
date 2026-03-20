@@ -3226,6 +3226,107 @@ div[data-testid="stButton"] > button:not([kind]) {
 """, unsafe_allow_html=True)
 
 
+def _ai_suggest_dcf(saved: dict, groq_key: str) -> tuple[dict, str]:
+    """ให้ Groq วิเคราะห์และแนะนำค่า DCF parameters ทั้งชุด
+    Returns (params_dict, reasoning_text) หรือ ({}, error_msg)
+    """
+    import json as _json
+
+    ticker  = saved.get("ticker", "")
+    company = saved.get("company_name", ticker)
+    sector  = saved.get("sector", "")
+
+    # ── รวบรวม financial data จาก saved (ดึงมาจาก yfinance ใน step 1 แล้ว) ──
+    revenue       = saved.get("revenue", 0)
+    revenue_prev  = saved.get("revenue_prev", 0)
+    ebit_margin   = saved.get("ebit_margin_base", 0)
+    beta          = saved.get("beta", 1.2)
+    net_income    = saved.get("net_income", 0)
+    total_debt    = saved.get("total_debt", 0)
+    cash          = saved.get("cash", 0)
+    equity        = saved.get("equity", 0)
+    shares        = saved.get("shares_outstanding", 1)
+    price         = saved.get("current_price", 0)
+
+    # Growth ย้อนหลัง
+    hist_growth = ((revenue / revenue_prev) - 1) if revenue_prev and revenue_prev > 0 else None
+
+    # ROIC โดยประมาณ
+    invested_cap = max(equity + total_debt - cash, 1)
+    approx_roic  = (net_income / invested_cap) if net_income and invested_cap else None
+
+    # Sales-to-Capital
+    approx_s2c   = (revenue / invested_cap) if revenue and invested_cap > 0 else None
+
+    # สร้าง context string
+    ctx_lines = [f"Company: {company} ({ticker})", f"Sector: {sector}"]
+    if revenue:       ctx_lines.append(f"Revenue (latest): ${revenue:,.0f}M")
+    if hist_growth:   ctx_lines.append(f"Historical Revenue Growth (YoY): {hist_growth:.1%}")
+    if ebit_margin:   ctx_lines.append(f"Current EBIT Margin: {ebit_margin:.1%}")
+    if beta:          ctx_lines.append(f"Beta: {beta:.2f}")
+    if approx_roic:   ctx_lines.append(f"Approx. ROIC: {approx_roic:.1%}")
+    if approx_s2c:    ctx_lines.append(f"Approx. Sales-to-Capital: {approx_s2c:.2f}x")
+    if price:         ctx_lines.append(f"Current Price: ${price:,.2f}")
+    context = "\n".join(ctx_lines)
+
+    prompt = f"""You are a senior equity analyst. Based on the financial data below, recommend reasonable DCF assumptions.
+
+{context}
+
+Return ONLY valid JSON (no markdown, no explanation outside JSON) with this exact schema:
+{{
+  "revenue_growth_yr1":   <float 0–1, e.g. 0.45>,
+  "revenue_growth_final": <float 0–0.10>,
+  "growth_years":         <int 5–15>,
+  "ebit_margin_target":   <float 0–0.80>,
+  "sales_to_capital":     <float 0.5–8.0>,
+  "wacc":                 <float 0.06–0.18>,
+  "terminal_growth":      <float 0.01–0.05>,
+  "terminal_roic":        <float 0.08–0.50>,
+  "margin_of_safety":     <float 0.10–0.50>,
+  "reasoning": {{
+    "revenue_growth_yr1":   "<1-sentence Thai explanation>",
+    "revenue_growth_final": "<1-sentence Thai explanation>",
+    "growth_years":         "<1-sentence Thai explanation>",
+    "ebit_margin_target":   "<1-sentence Thai explanation>",
+    "sales_to_capital":     "<1-sentence Thai explanation>",
+    "wacc":                 "<1-sentence Thai explanation>",
+    "terminal_growth":      "<1-sentence Thai explanation>",
+    "terminal_roic":        "<1-sentence Thai explanation>",
+    "margin_of_safety":     "<1-sentence Thai explanation>"
+  }}
+}}
+
+Rules:
+- terminal_growth must be LESS than wacc
+- Be specific to this company's financials, not generic
+- If historical growth is very high (>80%), apply mean-reversion for yr1
+- Respond in JSON only"""
+
+    try:
+        from groq import Groq as _Groq
+        client = _Groq(api_key=groq_key)
+        resp = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1024,
+            temperature=0.2,
+        )
+        raw = resp.choices[0].message.content.strip()
+        # strip markdown code fences if present
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"): raw = raw[4:]
+        data = _json.loads(raw)
+        reasoning = data.pop("reasoning", {})
+        reasoning_text = "\n".join(
+            f"**{k}:** {v}" for k, v in reasoning.items()
+        )
+        return data, reasoning_text
+    except Exception as e:
+        return {}, f"❌ AI Suggest ล้มเหลว: {e}"
+
+
 def _render_valuation_tab():
     """Render the 💎 Valuation tab — 3-step DCF Wizard"""
     from dcf_engine import DCFInputs, DCFOutputs, run_dcf, run_scenarios, sensitivity_table, reverse_dcf, reverse_dcf_single_stage, fetch_multiples, implied_value_from_multiples
@@ -3418,6 +3519,52 @@ def _val_wizard():
     # ════════════════════════════════════════════════════════════════════
     elif step == 2:
         st.markdown("### 📈 สมมติฐานการเติบโตและต้นทุนทุน")
+
+        # ── AI Suggest ────────────────────────────────────────────────────────
+        if "ai_dcf_reasoning" not in st.session_state:
+            st.session_state["ai_dcf_reasoning"] = ""
+        if "ai_dcf_error"    not in st.session_state:
+            st.session_state["ai_dcf_error"]    = ""
+
+        ai_col1, ai_col2 = st.columns([3, 1])
+        ai_col1.caption("🤖 ให้ AI วิเคราะห์ข้อมูลบริษัทแล้วแนะนำค่าพารามิเตอร์ทั้งชุดพร้อมเหตุผล")
+        ai_clicked = ai_col2.button("🤖 AI Suggest", type="primary", use_container_width=True)
+
+        if ai_clicked:
+            try:
+                _gk = st.secrets["GROQ_API_KEY"]
+                groq_key = str(_gk["GROQ_API_KEY"] if hasattr(_gk, "__getitem__") and not isinstance(_gk, str) else _gk)
+            except Exception:
+                groq_key = ""
+            if not groq_key:
+                st.session_state["ai_dcf_error"]    = "❌ ไม่พบ GROQ_API_KEY ใน Secrets"
+                st.session_state["ai_dcf_reasoning"] = ""
+            else:
+                with st.spinner("🤖 AI กำลังวิเคราะห์..."):
+                    params, reasoning = _ai_suggest_dcf(saved, groq_key)
+                if not params:
+                    st.session_state["ai_dcf_error"]    = reasoning  # reasoning = error msg
+                    st.session_state["ai_dcf_reasoning"] = ""
+                else:
+                    # Apply suggested values → update val_inputs then rerun
+                    st.session_state["ai_dcf_error"]    = ""
+                    st.session_state["ai_dcf_reasoning"] = reasoning
+                    st.session_state["val_inputs"].update({
+                        k: v for k, v in params.items()
+                        if k in ("revenue_growth_yr1","revenue_growth_final","growth_years",
+                                 "ebit_margin_target","sales_to_capital","wacc",
+                                 "terminal_growth","terminal_roic","margin_of_safety")
+                    })
+                    st.rerun()
+
+        if st.session_state["ai_dcf_error"]:
+            st.error(st.session_state["ai_dcf_error"])
+        if st.session_state["ai_dcf_reasoning"]:
+            with st.expander("📋 ดูเหตุผลจาก AI", expanded=True):
+                st.success("✅ AI แนะนำค่าพารามิเตอร์และอัพเดต slider แล้ว ปรับเพิ่มเติมได้ตามต้องการ")
+                st.markdown(st.session_state["ai_dcf_reasoning"])
+
+        st.divider()
 
         # ── คู่มือหาค่าพารามิเตอร์ (expander) ─────────────────────────────────
         with st.expander("📚 วิธีหาค่าพารามิเตอร์แต่ละตัว", expanded=False):
