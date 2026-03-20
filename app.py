@@ -3269,13 +3269,14 @@ def _ai_suggest_dcf(saved: dict, groq_key: str) -> tuple[dict, str]:
     if price:         ctx_lines.append(f"Current Price: ${price:,.2f}")
     context = "\n".join(ctx_lines)
 
-    prompt = f"""You are a senior equity analyst. Based on the financial data below, recommend reasonable DCF assumptions.
+    prompt = f"""You are a senior equity analyst specializing in DCF valuation. Analyze the company data below and recommend specific, well-reasoned DCF assumptions.
 
+COMPANY DATA:
 {context}
 
 Return ONLY valid JSON (no markdown, no explanation outside JSON) with this exact schema:
 {{
-  "revenue_growth_yr1":   <float 0–1, e.g. 0.45>,
+  "revenue_growth_yr1":   <float 0–1>,
   "revenue_growth_final": <float 0–0.10>,
   "growth_years":         <int 5–15>,
   "ebit_margin_target":   <float 0–0.80>,
@@ -3285,23 +3286,24 @@ Return ONLY valid JSON (no markdown, no explanation outside JSON) with this exac
   "terminal_roic":        <float 0.08–0.50>,
   "margin_of_safety":     <float 0.10–0.50>,
   "reasoning": {{
-    "revenue_growth_yr1":   "<1-sentence Thai explanation>",
-    "revenue_growth_final": "<1-sentence Thai explanation>",
-    "growth_years":         "<1-sentence Thai explanation>",
-    "ebit_margin_target":   "<1-sentence Thai explanation>",
-    "sales_to_capital":     "<1-sentence Thai explanation>",
-    "wacc":                 "<1-sentence Thai explanation>",
-    "terminal_growth":      "<1-sentence Thai explanation>",
-    "terminal_roic":        "<1-sentence Thai explanation>",
-    "margin_of_safety":     "<1-sentence Thai explanation>"
+    "revenue_growth_yr1":   "<Thai: cite actual numbers, e.g. historical growth X%, analyst consensus Y%, justify mean-reversion>",
+    "revenue_growth_final": "<Thai: cite sector long-term GDP or industry growth rate>",
+    "growth_years":         "<Thai: cite sector visibility, competitive moat duration>",
+    "ebit_margin_target":   "<Thai: cite current margin X%, peer comparison, trajectory>",
+    "sales_to_capital":     "<Thai: cite current ratio X, asset-light vs capital-heavy business model>",
+    "wacc":                 "<Thai: cite beta X, risk-free rate ~4.3%, equity risk premium, sector risk>",
+    "terminal_growth":      "<Thai: cite US/global GDP assumption, must stay below WACC>",
+    "terminal_roic":        "<Thai: cite current ROIC X%, moat strength, long-term competitive advantage>",
+    "margin_of_safety":     "<Thai: cite stock volatility beta, business predictability, cycle risk>"
   }}
 }}
 
-Rules:
-- terminal_growth must be LESS than wacc
-- Be specific to this company's financials, not generic
-- If historical growth is very high (>80%), apply mean-reversion for yr1
-- Respond in JSON only"""
+STRICT RULES:
+- terminal_growth MUST be less than wacc
+- Every reasoning field MUST cite specific numbers from the data provided (%, ratios, dollar amounts)
+- Apply mean-reversion: if historical growth >60%, yr1 should be meaningfully lower than historical
+- For fabless semiconductor companies: sales_to_capital should be 3–6x (asset-light model)
+- Respond in JSON only, no text outside the JSON object"""
 
     try:
         from groq import Groq as _Groq
@@ -3319,9 +3321,31 @@ Rules:
             if raw.startswith("json"): raw = raw[4:]
         data = _json.loads(raw)
         reasoning = data.pop("reasoning", {})
-        reasoning_text = "\n".join(
-            f"**{k}:** {v}" for k, v in reasoning.items()
-        )
+        _label_map = {
+            "revenue_growth_yr1":   "📈 Revenue Growth ปีที่ 1",
+            "revenue_growth_final": "📉 Revenue Growth ปีสุดท้าย",
+            "growth_years":         "📅 จำนวนปีที่คาดการณ์",
+            "ebit_margin_target":   "💰 EBIT Margin เป้าหมาย",
+            "sales_to_capital":     "🏭 Sales-to-Capital",
+            "wacc":                 "💸 WACC",
+            "terminal_growth":      "🏁 Terminal Growth Rate",
+            "terminal_roic":        "📊 Terminal ROIC",
+            "margin_of_safety":     "🛡️ Margin of Safety",
+        }
+        val_map = {k: v for k, v in data.items()}
+        reasoning_parts = []
+        for k, label in _label_map.items():
+            val = val_map.get(k, "")
+            # format value
+            if k in ("growth_years",):
+                val_str = f"{int(val)} ปี" if val else ""
+            elif k == "sales_to_capital":
+                val_str = f"{float(val):.2f}x" if val else ""
+            else:
+                val_str = f"{float(val)*100:.1f}%" if val else ""
+            reason = reasoning.get(k, "")
+            reasoning_parts.append(f"**{label}** → `{val_str}`  \n{reason}")
+        reasoning_text = "\n\n".join(reasoning_parts)
         return data, reasoning_text
     except Exception as e:
         return {}, f"❌ AI Suggest ล้มเหลว: {e}"
