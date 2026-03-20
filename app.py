@@ -3234,39 +3234,112 @@ def _ai_suggest_dcf(saved: dict, groq_key: str) -> tuple[dict, str]:
 
     ticker  = saved.get("ticker", "")
     company = saved.get("company_name", ticker)
-    sector  = saved.get("sector", "")
 
-    # ── รวบรวม financial data จาก saved (ดึงมาจาก yfinance ใน step 1 แล้ว) ──
-    revenue       = saved.get("revenue", 0)
-    revenue_prev  = saved.get("revenue_prev", 0)
-    ebit_margin   = saved.get("ebit_margin_base", 0)
-    beta          = saved.get("beta", 1.2)
-    net_income    = saved.get("net_income", 0)
-    total_debt    = saved.get("total_debt", 0)
-    cash          = saved.get("cash", 0)
-    equity        = saved.get("equity", 0)
-    shares        = saved.get("shares_outstanding", 1)
-    price         = saved.get("current_price", 0)
+    # ── Fresh yfinance fetch — ดึง real-time data ──────────────────────────
+    ctx_lines = [f"Company: {company} ({ticker})"]
+    try:
+        import yfinance as _yf
+        tk   = _yf.Ticker(ticker)
+        info = tk.info or {}
 
-    # Growth ย้อนหลัง
-    hist_growth = ((revenue / revenue_prev) - 1) if revenue_prev and revenue_prev > 0 else None
+        sector   = info.get("sector", saved.get("sector", ""))
+        industry = info.get("industry", "")
+        if sector:   ctx_lines.append(f"Sector: {sector}")
+        if industry: ctx_lines.append(f"Industry: {industry}")
 
-    # ROIC โดยประมาณ
-    invested_cap = max(equity + total_debt - cash, 1)
-    approx_roic  = (net_income / invested_cap) if net_income and invested_cap else None
+        # ── Price & Market Cap ──────────────────────────────────────────────
+        price = info.get("currentPrice") or info.get("regularMarketPrice") or 0
+        mktcap = info.get("marketCap", 0)
+        if price:  ctx_lines.append(f"Current Price: ${float(price):,.2f}")
+        if mktcap: ctx_lines.append(f"Market Cap: ${float(mktcap)/1e9:,.1f}B")
 
-    # Sales-to-Capital
-    approx_s2c   = (revenue / invested_cap) if revenue and invested_cap > 0 else None
+        # ── Revenue (TTM + growth) ──────────────────────────────────────────
+        revenue = info.get("totalRevenue", 0)
+        if revenue: ctx_lines.append(f"Revenue TTM: ${float(revenue)/1e9:,.2f}B")
+        rev_growth = info.get("revenueGrowth")
+        if rev_growth is not None:
+            ctx_lines.append(f"Revenue Growth (YoY TTM): {float(rev_growth):.1%}")
 
-    # สร้าง context string
-    ctx_lines = [f"Company: {company} ({ticker})", f"Sector: {sector}"]
-    if revenue:       ctx_lines.append(f"Revenue (latest): ${revenue:,.0f}M")
-    if hist_growth:   ctx_lines.append(f"Historical Revenue Growth (YoY): {hist_growth:.1%}")
-    if ebit_margin:   ctx_lines.append(f"Current EBIT Margin: {ebit_margin:.1%}")
-    if beta:          ctx_lines.append(f"Beta: {beta:.2f}")
-    if approx_roic:   ctx_lines.append(f"Approx. ROIC: {approx_roic:.1%}")
-    if approx_s2c:    ctx_lines.append(f"Approx. Sales-to-Capital: {approx_s2c:.2f}x")
-    if price:         ctx_lines.append(f"Current Price: ${price:,.2f}")
+        # ── Revenue history — คำนวณ CAGR 3 ปี ─────────────────────────────
+        try:
+            fin = tk.financials
+            if fin is not None and not fin.empty:
+                rev_rows = [r for r in fin.index if "total revenue" in r.lower() or "revenue" == r.lower()]
+                if rev_rows:
+                    rev_hist = fin.loc[rev_rows[0]].dropna().astype(float).sort_index()
+                    if len(rev_hist) >= 2:
+                        rev_vals = rev_hist.values
+                        years = len(rev_vals) - 1
+                        cagr = (rev_vals[0] / rev_vals[-1]) ** (1/years) - 1
+                        ctx_lines.append(f"Revenue CAGR {years}yr: {cagr:.1%}")
+                        for i, (dt, v) in enumerate(rev_hist.items()):
+                            ctx_lines.append(f"  Revenue {str(dt)[:4]}: ${v/1e9:,.2f}B")
+        except Exception:
+            pass
+
+        # ── Margins ────────────────────────────────────────────────────────
+        op_margin    = info.get("operatingMargins")
+        gross_margin = info.get("grossMargins")
+        profit_margin = info.get("profitMargins")
+        if op_margin    is not None: ctx_lines.append(f"Operating Margin (TTM): {float(op_margin):.1%}")
+        if gross_margin is not None: ctx_lines.append(f"Gross Margin (TTM): {float(gross_margin):.1%}")
+        if profit_margin is not None: ctx_lines.append(f"Net Profit Margin (TTM): {float(profit_margin):.1%}")
+
+        # ── Profitability ──────────────────────────────────────────────────
+        roe  = info.get("returnOnEquity")
+        roa  = info.get("returnOnAssets")
+        if roe is not None: ctx_lines.append(f"Return on Equity (TTM): {float(roe):.1%}")
+        if roa is not None: ctx_lines.append(f"Return on Assets (TTM): {float(roa):.1%}")
+
+        # ── ROIC proxy ─────────────────────────────────────────────────────
+        total_debt = float(info.get("totalDebt", 0) or 0)
+        cash_val   = float(info.get("totalCash", 0) or info.get("cashAndCashEquivalents", 0) or 0)
+        equity_val = float(info.get("totalStockholderEquity", 0) or 0)
+        net_income = float(info.get("netIncomeToCommon", 0) or 0)
+        invested_cap = equity_val + total_debt - cash_val
+        if invested_cap > 0 and net_income:
+            roic = net_income / invested_cap
+            ctx_lines.append(f"Approx. ROIC: {roic:.1%}")
+        if total_debt: ctx_lines.append(f"Total Debt: ${total_debt/1e9:,.2f}B")
+        if cash_val:   ctx_lines.append(f"Cash: ${cash_val/1e9:,.2f}B")
+
+        # ── Sales-to-Capital ───────────────────────────────────────────────
+        if revenue and invested_cap > 0:
+            s2c = float(revenue) / invested_cap
+            ctx_lines.append(f"Sales-to-Capital (current): {s2c:.2f}x")
+
+        # ── FCF ────────────────────────────────────────────────────────────
+        fcf = info.get("freeCashflow")
+        if fcf: ctx_lines.append(f"Free Cash Flow (TTM): ${float(fcf)/1e9:,.2f}B")
+
+        # ── Beta & Risk ────────────────────────────────────────────────────
+        beta = info.get("beta")
+        if beta: ctx_lines.append(f"Beta (5yr monthly): {float(beta):.2f}")
+
+        # ── Analyst estimates ──────────────────────────────────────────────
+        eps_growth = info.get("earningsGrowth") or info.get("earningsQuarterlyGrowth")
+        fwd_eps    = info.get("forwardEps")
+        fwd_pe     = info.get("forwardPE")
+        analyst_tgt = info.get("targetMeanPrice")
+        if eps_growth:   ctx_lines.append(f"Earnings Growth (YoY): {float(eps_growth):.1%}")
+        if fwd_eps:      ctx_lines.append(f"Forward EPS (analyst est): ${float(fwd_eps):.2f}")
+        if fwd_pe:       ctx_lines.append(f"Forward P/E: {float(fwd_pe):.1f}x")
+        if analyst_tgt:  ctx_lines.append(f"Analyst Mean Price Target: ${float(analyst_tgt):,.2f}")
+
+        # ── Payout / Buyback ───────────────────────────────────────────────
+        payout = info.get("payoutRatio")
+        if payout: ctx_lines.append(f"Payout Ratio: {float(payout):.1%}")
+
+    except Exception as _e:
+        # yfinance ไม่ได้ → fallback to saved
+        ctx_lines.append("(yfinance unavailable — using cached data)")
+        revenue       = saved.get("revenue_base", 0)
+        ebit_margin   = saved.get("ebit_margin_base", 0)
+        price         = saved.get("current_price", 0)
+        if revenue:     ctx_lines.append(f"Revenue: ${revenue:,.0f}M")
+        if ebit_margin: ctx_lines.append(f"EBIT Margin: {ebit_margin:.1%}")
+        if price:       ctx_lines.append(f"Price: ${price:,.2f}")
+
     context = "\n".join(ctx_lines)
 
     prompt = f"""You are a senior equity analyst specializing in DCF valuation. Analyze the company data below and recommend specific, well-reasoned DCF assumptions.
