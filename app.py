@@ -3226,6 +3226,125 @@ div[data-testid="stButton"] > button:not([kind]) {
 """, unsafe_allow_html=True)
 
 
+def _fetch_sec_guidance(ticker: str, company_name: str = "") -> str:
+    """Fetch most recent 10-Q/10-K from SEC EDGAR → extract management guidance.
+    Returns text snippet or "" on any failure (fail silently).
+    """
+    import urllib.request, json, re
+
+    _HEADERS = {"User-Agent": "InvestmentDashboard teerapat.13018@gmail.com",
+                "Accept": "application/json"}
+
+    def _get(url: str, max_bytes: int = 1_000_000) -> str:
+        req = urllib.request.Request(url, headers=_HEADERS)
+        with urllib.request.urlopen(req, timeout=12) as r:
+            raw = r.read(max_bytes)
+            enc = r.headers.get_content_charset("utf-8")
+            return raw.decode(enc, errors="ignore")
+
+    try:
+        # ── Step 1: Ticker → CIK ─────────────────────────────────────────────
+        tickers_json = json.loads(_get(
+            "https://www.sec.gov/files/company_tickers.json",
+            max_bytes=3_000_000,
+        ))
+        entry = next(
+            (v for v in tickers_json.values()
+             if v.get("ticker", "").upper() == ticker.upper()),
+            None,
+        )
+        if not entry:
+            return ""
+        cik_int = int(entry["cik_str"])
+        cik_pad = str(cik_int).zfill(10)
+
+        # ── Step 2: Get recent filings list ──────────────────────────────────
+        subs = json.loads(_get(f"https://data.sec.gov/submissions/CIK{cik_pad}.json"))
+        recent = subs.get("filings", {}).get("recent", {})
+        forms      = recent.get("form", [])
+        accessions = recent.get("accessionNumber", [])
+        dates      = recent.get("filingDate", [])
+
+        # Find most recent 10-Q, fallback 10-K
+        idx = next((i for i, f in enumerate(forms) if f == "10-Q"), None)
+        if idx is None:
+            idx = next((i for i, f in enumerate(forms) if f == "10-K"), None)
+        if idx is None:
+            return ""
+
+        acc_dashes   = accessions[idx]               # "0001045810-24-000042"
+        acc_nodashes = acc_dashes.replace("-", "")   # "000104581024000042"
+        form_type    = forms[idx]
+        filed_date   = dates[idx]
+
+        # ── Step 3: Filing index → find main .htm document ───────────────────
+        index_url = (
+            f"https://www.sec.gov/Archives/edgar/data/"
+            f"{cik_int}/{acc_nodashes}/{acc_dashes}-index.json"
+        )
+        index_data = json.loads(_get(index_url))
+        doc_name = None
+        for doc in index_data.get("documents", []):
+            dtype = doc.get("type", "")
+            dname = doc.get("document", "")
+            if dtype in (form_type, "10-K", "10-Q") and dname.lower().endswith(".htm"):
+                doc_name = dname
+                break
+        if not doc_name:
+            for doc in index_data.get("documents", []):
+                if doc.get("document", "").lower().endswith(".htm"):
+                    doc_name = doc["document"]
+                    break
+        if not doc_name:
+            return ""
+
+        # ── Step 4: Fetch document (limit 800KB) ─────────────────────────────
+        doc_url = (
+            f"https://www.sec.gov/Archives/edgar/data/"
+            f"{cik_int}/{acc_nodashes}/{doc_name}"
+        )
+        html = _get(doc_url, max_bytes=800_000)
+
+        # Strip HTML → plain text
+        text = re.sub(r"<[^>]+>", " ", html)
+        text = re.sub(r"&[a-zA-Z]+;|&#[0-9]+;", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+
+        # ── Step 5: Extract guidance / outlook snippets ───────────────────────
+        _KW = [
+            "our outlook", "we expect", "management expects",
+            "revenue guidance", "guidance", "full year",
+            "next quarter", "fiscal year", "we anticipate",
+            "forward-looking", "outlook",
+        ]
+        seen, snippets = set(), []
+        tl = text.lower()
+        for kw in _KW:
+            pos = 0
+            while len(snippets) < 8:
+                idx2 = tl.find(kw, pos)
+                if idx2 == -1:
+                    break
+                start = max(0, idx2 - 80)
+                end   = min(len(text), idx2 + 450)
+                chunk = text[start:end].strip()
+                key   = chunk[:60]
+                if len(chunk) > 60 and key not in seen:
+                    seen.add(key)
+                    snippets.append(chunk)
+                pos = idx2 + len(kw)
+
+        if not snippets:
+            return ""
+
+        header = f"[SEC {form_type} filed {filed_date} — {company_name or ticker}]"
+        body   = "\n\n".join(snippets[:6])
+        return f"{header}\n{body}"
+
+    except Exception:
+        return ""
+
+
 def _ai_suggest_dcf(saved: dict, groq_key: str) -> tuple[dict, str]:
     """ให้ Groq วิเคราะห์และแนะนำค่า DCF parameters ทั้งชุด
     Returns (params_dict, reasoning_text) หรือ ({}, error_msg)
@@ -3374,10 +3493,14 @@ def _ai_suggest_dcf(saved: dict, groq_key: str) -> tuple[dict, str]:
 
     news_section = f"\nRECENT NEWS & ANALYST CONTEXT (real-time):\n{news_context}" if news_context else ""
 
-    prompt = f"""You are a senior equity analyst specializing in DCF valuation. Analyze all data below — financials AND recent news — to recommend specific, well-reasoned DCF assumptions.
+    # ── SEC EDGAR: ดึง management guidance จาก 10-Q/10-K ล่าสุด ─────────────
+    sec_text    = _fetch_sec_guidance(ticker, company)
+    sec_section = f"\nSEC FILING — OFFICIAL MANAGEMENT GUIDANCE:\n{sec_text}" if sec_text else ""
+
+    prompt = f"""You are a senior equity analyst specializing in DCF valuation. Analyze ALL data sources below — live financials, recent news, AND official SEC guidance — to recommend specific, well-reasoned DCF assumptions.
 
 COMPANY DATA:
-{context}{news_section}
+{context}{news_section}{sec_section}
 
 Return ONLY valid JSON (no markdown, no explanation outside JSON) with this exact schema:
 {{
@@ -3676,7 +3799,7 @@ def _val_wizard():
                 except Exception:
                     _tv_key = ""
                 saved_with_keys = {**saved, "_tavily_key": _tv_key}
-                with st.spinner("🔍 ดึงข่าวล่าสุด + 🤖 AI วิเคราะห์..."):
+                with st.spinner("🔍 ดึงข่าว + 📋 SEC filing + 🤖 AI วิเคราะห์..."):
                     params, reasoning = _ai_suggest_dcf(saved_with_keys, groq_key)
                 if not params:
                     st.session_state["ai_dcf_error"]    = reasoning  # reasoning = error msg
