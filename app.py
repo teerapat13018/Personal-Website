@@ -3513,6 +3513,7 @@ Return ONLY valid JSON (no markdown, no explanation outside JSON) with this exac
   "terminal_growth":      <float 0.01–0.05>,
   "terminal_roic":        <float 0.08–0.50>,
   "margin_of_safety":     <float 0.10–0.50>,
+  "narrative": "<Thai: 3-4 sentences telling the investment story — where the company is now, key growth drivers, key risks, and overall DCF stance (optimistic/neutral/conservative). Cite real numbers from the data.>",
   "reasoning": {{
     "revenue_growth_yr1":   "<Thai: cite actual numbers, e.g. historical growth X%, analyst consensus Y%, justify mean-reversion>",
     "revenue_growth_final": "<Thai: cite sector long-term GDP or industry growth rate>",
@@ -3529,6 +3530,7 @@ Return ONLY valid JSON (no markdown, no explanation outside JSON) with this exac
 STRICT RULES:
 - terminal_growth MUST be less than wacc
 - Every reasoning field MUST cite specific numbers from the data provided (%, ratios, dollar amounts)
+- narrative MUST mention key growth drivers AND risks with actual numbers
 - Apply mean-reversion: if historical growth >60%, yr1 should be meaningfully lower than historical
 - For fabless semiconductor companies: sales_to_capital should be 3–6x (asset-light model)
 - Respond in JSON only, no text outside the JSON object"""
@@ -3539,7 +3541,7 @@ STRICT RULES:
         resp = client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=1024,
+            max_tokens=1800,
             temperature=0.2,
         )
         raw = resp.choices[0].message.content.strip()
@@ -3547,7 +3549,8 @@ STRICT RULES:
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"): raw = raw[4:]
-        data = _json.loads(raw)
+        data      = _json.loads(raw)
+        narrative = data.pop("narrative", "")
         reasoning = data.pop("reasoning", {})
         _label_map = {
             "revenue_growth_yr1":   "📈 Revenue Growth ปีที่ 1",
@@ -3564,8 +3567,7 @@ STRICT RULES:
         reasoning_parts = []
         for k, label in _label_map.items():
             val = val_map.get(k, "")
-            # format value
-            if k in ("growth_years",):
+            if k == "growth_years":
                 val_str = f"{int(val)} ปี" if val else ""
             elif k == "sales_to_capital":
                 val_str = f"{float(val):.2f}x" if val else ""
@@ -3573,7 +3575,10 @@ STRICT RULES:
                 val_str = f"{float(val)*100:.1f}%" if val else ""
             reason = reasoning.get(k, "")
             reasoning_parts.append(f"**{label}** → `{val_str}`  \n{reason}")
-        reasoning_text = "\n\n".join(reasoning_parts)
+
+        # narrative เป็น header ก่อน ตามด้วย separator แล้วรายละเอียด
+        narrative_block = f"### 📝 สรุปภาพรวมบริษัท\n{narrative}\n\n---\n### 🔢 รายละเอียดแต่ละพารามิเตอร์\n" if narrative else ""
+        reasoning_text  = narrative_block + "\n\n".join(reasoning_parts)
         return data, reasoning_text
     except Exception as e:
         return {}, f"❌ AI Suggest ล้มเหลว: {e}"
