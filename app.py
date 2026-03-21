@@ -3342,10 +3342,42 @@ def _ai_suggest_dcf(saved: dict, groq_key: str) -> tuple[dict, str]:
 
     context = "\n".join(ctx_lines)
 
-    prompt = f"""You are a senior equity analyst specializing in DCF valuation. Analyze the company data below and recommend specific, well-reasoned DCF assumptions.
+    # ── Tavily: ดึงข่าวล่าสุด real-time ───────────────────────────────────
+    news_context = ""
+    try:
+        from tavily import TavilyClient as _Tavily
+        _tv_key = saved.get("_tavily_key", "")
+        if _tv_key:
+            _tv = _Tavily(api_key=_tv_key)
+            _queries = [
+                f"{ticker} {company} revenue outlook 2025 2026",
+                f"{ticker} {company} risk factors earnings guidance",
+            ]
+            _snippets = []
+            for _q in _queries:
+                try:
+                    _res = _tv.search(query=_q, max_results=3,
+                                      search_depth="basic",
+                                      include_answer=True)
+                    if _res.get("answer"):
+                        _snippets.append(_res["answer"])
+                    for _r in (_res.get("results") or [])[:2]:
+                        _content = _r.get("content", "").strip()
+                        if _content:
+                            _snippets.append(f"[{_r.get('title','')}] {_content[:300]}")
+                except Exception:
+                    pass
+            if _snippets:
+                news_context = "\n".join(f"- {s}" for s in _snippets[:8])
+    except Exception:
+        pass
+
+    news_section = f"\nRECENT NEWS & ANALYST CONTEXT (real-time):\n{news_context}" if news_context else ""
+
+    prompt = f"""You are a senior equity analyst specializing in DCF valuation. Analyze all data below — financials AND recent news — to recommend specific, well-reasoned DCF assumptions.
 
 COMPANY DATA:
-{context}
+{context}{news_section}
 
 Return ONLY valid JSON (no markdown, no explanation outside JSON) with this exact schema:
 {{
@@ -3637,8 +3669,15 @@ def _val_wizard():
                 st.session_state["ai_dcf_error"]    = "❌ ไม่พบ GROQ_API_KEY ใน Secrets"
                 st.session_state["ai_dcf_reasoning"] = ""
             else:
-                with st.spinner("🤖 AI กำลังวิเคราะห์..."):
-                    params, reasoning = _ai_suggest_dcf(saved, groq_key)
+                # แนบ Tavily key เข้า saved ชั่วคราว เพื่อให้ _ai_suggest_dcf ดึงข่าวได้
+                try:
+                    _tv = st.secrets["tavily_api_key"]
+                    _tv_key = str(_tv["tavily_api_key"] if hasattr(_tv, "__getitem__") and not isinstance(_tv, str) else _tv)
+                except Exception:
+                    _tv_key = ""
+                saved_with_keys = {**saved, "_tavily_key": _tv_key}
+                with st.spinner("🔍 ดึงข่าวล่าสุด + 🤖 AI วิเคราะห์..."):
+                    params, reasoning = _ai_suggest_dcf(saved_with_keys, groq_key)
                 if not params:
                     st.session_state["ai_dcf_error"]    = reasoning  # reasoning = error msg
                     st.session_state["ai_dcf_reasoning"] = ""
