@@ -594,19 +594,45 @@ def fetch_yf_financials(ticker: str) -> dict:
         return {"_error": "yfinance ไม่ได้ติดตั้ง — pip install yfinance"}
 
     import time as _time
+    tk = yf.Ticker(ticker.strip())
     info = {}
     last_err = ""
-    for _attempt in range(3):
+
+    # ── ลอง fast_info ก่อน (lightweight, rate-limit น้อยกว่า) ─────────────
+    try:
+        fi = tk.fast_info
+        info = {
+            "longName":          getattr(fi, "company_name",    None) or ticker,
+            "currentPrice":      getattr(fi, "last_price",      None),
+            "marketCap":         getattr(fi, "market_cap",      None),
+            "sharesOutstanding": getattr(fi, "shares",          None),
+            "currency":          getattr(fi, "currency",        "USD"),
+        }
+    except Exception:
+        pass
+
+    # ── ลอง full info พร้อม exponential backoff ────────────────────────────
+    _delays = [1, 3, 8]   # รอนานขึ้นเพื่อหลีก rate-limit ของ shared IP
+    for _attempt, _delay in enumerate(_delays):
         try:
-            tk   = yf.Ticker(ticker.strip())
-            info = tk.info or {}
-            if info:
+            _time.sleep(_delay if _attempt > 0 else 0.5)
+            full = tk.info or {}
+            if full:
+                info.update({k: v for k, v in full.items() if v is not None})
                 break
         except Exception as e:
             last_err = str(e)
-            _time.sleep(2 ** _attempt)   # 1s, 2s, 4s backoff
+            if "rate" in str(e).lower() or "429" in str(e) or "too many" in str(e).lower():
+                if _attempt < len(_delays) - 1:
+                    _time.sleep(_delays[_attempt])
+            if _attempt == len(_delays) - 1 and not info:
+                return {"_error": (
+                    f"Yahoo Finance rate-limit — กรุณารอ 30 วินาทีแล้วลองใหม่ "
+                    f"(หรือกรอกตัวเลขเองได้เลย)"
+                )}
+
     if not info:
-        return {"_error": f"ดึงข้อมูลไม่ได้: {last_err or 'ไม่พบข้อมูล (Yahoo Finance rate-limit — ลองใหม่อีกครั้ง)'}"}
+        return {"_error": f"ดึงข้อมูลไม่ได้: {last_err or 'ไม่พบข้อมูล — ลองใหม่อีกครั้ง'}"}
 
     result = {}
 
