@@ -760,13 +760,14 @@ def main():
     st.title("📈 Investment Dashboard")
     st.caption(f"Last session: {datetime.now().strftime('%d %b %Y %H:%M')}")
 
-    tab_exec, tab_input, tab_chart, tab_adv, tab_val, tab_timeline = st.tabs([
+    tab_exec, tab_input, tab_chart, tab_adv, tab_val, tab_timeline, tab_earnings = st.tabs([
         "🏠  ภาพรวม",
         "✏️  พอร์ตของฉัน",
         "📊  Chart & Analysis",
         "🚀  Advanced",
         "💎  Valuation",
         "📖  Company Timeline",
+        "📞  Earnings Call",
     ])
     # Hidden tabs — preserved for future use
     tab_port  = None  # hidden below with if False:
@@ -3000,6 +3001,9 @@ def main():
     with tab_timeline:
         _render_timeline_tab()
 
+    with tab_earnings:
+        _render_earnings_tab()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # VALUATION TAB — helper (called inside main())
@@ -4953,6 +4957,204 @@ def _render_file_timeline_tab(render_timeline_html, CATEGORIES) -> None:
         year_max    = yr_range[1],
     )
     st.markdown(html, unsafe_allow_html=True)
+
+
+# ─── Earnings Call Tab ───────────────────────────────────────────────────────
+
+def _render_earnings_tab():
+    """Tab: 📞 Earnings Call — ดึง transcript → แปลไทย → สรุป Mindmap"""
+    st.markdown("## 📞 Earnings Call")
+    st.caption(
+        "ดึง transcript จาก **SEC EDGAR** · แปลเป็นภาษาไทยด้วย Groq · สรุปเป็น Interactive Mindmap"
+    )
+
+    # ── Session state init ────────────────────────────────────────────────
+    _EC_DEFAULTS = {
+        "ec_raw":       "",     # English transcript
+        "ec_th":        "",     # Thai translation
+        "ec_mindmap":   "",     # Mindmap markdown
+        "ec_source":    "",
+        "ec_words":     0,
+        "ec_chunks":    0,
+        "ec_error":     "",
+        "ec_ticker":    "",
+        "ec_quarter":   "Q4",
+        "ec_year":      2024,
+    }
+    for k, v in _EC_DEFAULTS.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+    # ── Input row ─────────────────────────────────────────────────────────
+    c1, c2, c3, c4 = st.columns([2, 1, 1, 2])
+    ticker  = c1.text_input(
+        "Ticker", placeholder="เช่น NVDA, AAPL, NVO",
+        key="ec_ticker_input", label_visibility="visible",
+    ).upper().strip()
+    quarter = c2.selectbox("Quarter", ["Q1", "Q2", "Q3", "Q4"],
+                           index=3, key="ec_q_input")
+    year    = c3.number_input("ปี (ปฏิทิน)", min_value=2015, max_value=2026,
+                               value=2024, step=1, key="ec_yr_input")
+    fetch_clicked = c4.button(
+        "🔍 ดึง Transcript", type="primary",
+        use_container_width=True, key="ec_fetch_btn",
+    )
+
+    # ── Fetch ─────────────────────────────────────────────────────────────
+    if fetch_clicked:
+        if not ticker:
+            st.warning("กรุณาใส่ Ticker ก่อน")
+        else:
+            with st.spinner(f"🔍 ค้นหา {ticker} {quarter} {int(year)} ใน SEC EDGAR..."):
+                from earnings_engine import fetch_transcript
+                res = fetch_transcript(ticker, int(year), quarter)
+
+            if res["success"]:
+                st.session_state.update({
+                    "ec_raw":     res["text"],
+                    "ec_source":  res["source"],
+                    "ec_words":   res["word_count"],
+                    "ec_th":      "",
+                    "ec_mindmap": "",
+                    "ec_error":   "",
+                    "ec_ticker":  ticker,
+                    "ec_quarter": quarter,
+                    "ec_year":    int(year),
+                })
+            else:
+                st.session_state.update({
+                    "ec_raw":   "",
+                    "ec_error": res["error"],
+                })
+
+    # ── Error ─────────────────────────────────────────────────────────────
+    if st.session_state["ec_error"]:
+        st.error(st.session_state["ec_error"])
+        return
+
+    # ── No data yet ───────────────────────────────────────────────────────
+    if not st.session_state["ec_raw"]:
+        st.info(
+            "💡 กรอก **Ticker** และเลือก **Quarter / ปี** ที่ต้องการ แล้วกด **ดึง Transcript**\n\n"
+            "รองรับบริษัทจดทะเบียนในสหรัฐฯ ที่ยื่น 8-K transcript ผ่าน SEC EDGAR (ฟรี ไม่ต้อง API key)"
+        )
+        return
+
+    # ── Show fetch result ─────────────────────────────────────────────────
+    raw    = st.session_state["ec_raw"]
+    words  = st.session_state["ec_words"]
+    source = st.session_state["ec_source"]
+    st.success(f"✅ พบ transcript จาก **{source}** — **{words:,} คำ**")
+
+    with st.expander("📄 Transcript ต้นฉบับ (ภาษาอังกฤษ)", expanded=False):
+        st.text_area("", raw, height=280, key="ec_raw_view")
+
+    st.divider()
+
+    # ── Translate ─────────────────────────────────────────────────────────
+    st.markdown("### 🌐 แปลเป็นภาษาไทย")
+
+    chunks_est = max(1, words // 700)
+    st.caption(
+        f"ประมาณ **{chunks_est} chunks** · ใช้เวลาราว **{chunks_est * 5}–{chunks_est * 8} วินาที**"
+    )
+
+    translate_clicked = st.button(
+        "🌐 แปลเต็ม Transcript", type="primary", key="ec_translate_btn",
+    )
+
+    if translate_clicked:
+        try:
+            _gk      = st.secrets["GROQ_API_KEY"]
+            groq_key = str(_gk["GROQ_API_KEY"] if hasattr(_gk, "__getitem__") and not isinstance(_gk, str) else _gk)
+        except Exception:
+            groq_key = ""
+
+        if not groq_key:
+            st.error("❌ ไม่พบ GROQ_API_KEY ใน Secrets")
+        else:
+            prog_bar  = st.progress(0.0, text="เริ่มแปล...")
+            prog_text = st.empty()
+
+            def _prog(done, total):
+                pct = done / total if total else 0
+                prog_bar.progress(pct, text=f"แปลส่วนที่ {done}/{total}...")
+                prog_text.caption(f"⏳ {done} / {total} chunks เสร็จแล้ว")
+
+            from translate_engine import translate_transcript as _translate
+            res = _translate(
+                raw, groq_key,
+                ticker=st.session_state["ec_ticker"],
+                progress_callback=_prog,
+            )
+            prog_bar.empty()
+            prog_text.empty()
+
+            if res["success"]:
+                st.session_state["ec_th"]     = res["translated"]
+                st.session_state["ec_chunks"] = res["chunks_total"]
+            else:
+                st.error(res["error"])
+
+    # ── Thai transcript display ───────────────────────────────────────────
+    if st.session_state["ec_th"]:
+        chunks_done = st.session_state["ec_chunks"]
+        st.success(f"✅ แปลเสร็จ {chunks_done} chunks")
+        st.text_area(
+            "📜 Transcript ภาษาไทย",
+            st.session_state["ec_th"],
+            height=360,
+            key="ec_th_view",
+        )
+
+        st.divider()
+
+        # ── Mindmap ───────────────────────────────────────────────────────
+        st.markdown("### 🗺️ Mindmap สรุป Earnings Call")
+
+        mindmap_clicked = st.button(
+            "🗺️ สร้าง Mindmap", type="primary", key="ec_mindmap_btn",
+        )
+
+        if mindmap_clicked:
+            try:
+                _gk      = st.secrets["GROQ_API_KEY"]
+                groq_key = str(_gk["GROQ_API_KEY"] if hasattr(_gk, "__getitem__") and not isinstance(_gk, str) else _gk)
+            except Exception:
+                groq_key = ""
+
+            with st.spinner("🗺️ AI สรุปและสร้าง mindmap..."):
+                from translate_engine import generate_mindmap_data as _gen_mm
+                res = _gen_mm(
+                    raw, groq_key,
+                    ticker  = st.session_state["ec_ticker"],
+                    quarter = st.session_state["ec_quarter"],
+                    year    = st.session_state["ec_year"],
+                )
+
+            if res["success"]:
+                st.session_state["ec_mindmap"] = res["markdown"]
+            else:
+                st.error(res["error"])
+
+        if st.session_state["ec_mindmap"]:
+            _mm_md = st.session_state["ec_mindmap"]
+
+            # Load template and inject markdown
+            _tpl_path = Path(__file__).parent / "mindmap_template.html"
+            if _tpl_path.exists():
+                _tpl = _tpl_path.read_text(encoding="utf-8")
+                # Escape backticks and template literals for JS injection
+                _mm_safe = _mm_md.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+                _html    = _tpl.replace("MINDMAP_MARKDOWN", _mm_safe)
+                import streamlit.components.v1 as _cv1
+                _cv1.html(_html, height=560, scrolling=False)
+            else:
+                # Fallback: render markdown directly
+                st.markdown(_mm_md)
+
+            with st.expander("📋 Mindmap Markdown (copy-paste ได้)", expanded=False):
+                st.code(_mm_md, language="markdown")
 
 
 # ─── Entry Point ─────────────────────────────────────────────────────────────
