@@ -10,140 +10,116 @@
     body {
       background: #0d0d1a;
       font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-      overflow: hidden;
     }
 
-    #mm-wrap {
-      width: 100%;
-      height: 520px;
-      position: relative;
-    }
-
-    /* markmap overrides for dark theme */
-    .markmap-node circle {
-      fill: #6d28d9;
-      stroke: #a78bfa;
-      stroke-width: 2;
-    }
-    .markmap-node text {
-      fill: #e2e8f0 !important;
-      font-size: 13px;
-      font-family: 'Inter', sans-serif;
-    }
-    .markmap-link {
-      stroke: #4c1d95;
-      stroke-opacity: 0.7;
-    }
-
-    /* toolbar */
+    /* Toolbar */
     #toolbar {
-      position: absolute;
-      top: 10px;
-      right: 12px;
       display: flex;
-      gap: 6px;
-      z-index: 10;
+      gap: 8px;
+      padding: 10px 14px;
+      background: #12122a;
+      border-bottom: 1px solid rgba(124, 58, 237, 0.25);
     }
     #toolbar button {
-      background: rgba(109, 40, 217, 0.6);
-      border: 1px solid rgba(167, 139, 250, 0.4);
+      background: rgba(109, 40, 217, 0.55);
+      border: 1px solid rgba(167, 139, 250, 0.35);
       color: #e2e8f0;
-      padding: 5px 11px;
+      padding: 5px 13px;
       border-radius: 8px;
       font-size: 12px;
       cursor: pointer;
-      backdrop-filter: blur(6px);
       transition: background 0.15s;
     }
-    #toolbar button:hover {
-      background: rgba(109, 40, 217, 0.9);
+    #toolbar button:hover { background: rgba(109, 40, 217, 0.9); }
+
+    /* Markmap container */
+    #mm-container {
+      width: 100%;
+      height: 480px;
+    }
+    .markmap {
+      width: 100%;
+      height: 480px;
     }
 
-    /* loading overlay */
-    #loading {
-      position: absolute;
-      inset: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: #a78bfa;
-      font-size: 14px;
-      background: #0d0d1a;
+    /* Markmap dark-theme overrides */
+    .markmap-node circle {
+      fill: #6d28d9 !important;
+      stroke: #a78bfa !important;
+      stroke-width: 2 !important;
     }
+    .markmap-node text {
+      fill: #e2e8f0 !important;
+      font-size: 13px !important;
+    }
+    .markmap-link {
+      stroke: #5b21b6 !important;
+      stroke-opacity: 0.7 !important;
+    }
+    svg.markmap { background: #0d0d1a !important; }
   </style>
 </head>
 <body>
-  <div id="mm-wrap">
-    <div id="loading">⏳ กำลังโหลด mindmap...</div>
-    <div id="toolbar" style="display:none">
-      <button onclick="mm.fit()">⊞ Reset View</button>
-      <button onclick="expandAll()">➕ Expand All</button>
-      <button onclick="collapseAll()">➖ Collapse All</button>
-    </div>
-    <svg id="mindmap" style="width:100%;height:520px;"></svg>
+
+  <div id="toolbar">
+    <button onclick="fitMM()">⊞ Reset View</button>
+    <button onclick="expandMM()">➕ Expand All</button>
+    <button onclick="collapseMM()">➖ Collapse All</button>
   </div>
 
-  <!-- markmap autoloader handles all dependencies -->
+  <div id="mm-container">
+    <!--
+      markmap-autoloader scans for div.markmap and renders automatically.
+      The markdown is placed in a <script type="text/template"> inside it.
+    -->
+    <div class="markmap">
+      <script type="text/template">
+MINDMAP_MARKDOWN
+      </script>
+    </div>
+  </div>
+
+  <!-- markmap autoloader — handles all deps automatically -->
   <script src="https://cdn.jsdelivr.net/npm/markmap-autoloader@0.17.5/dist/index.js"></script>
 
   <script>
-    // Markdown content injected by Python
-    const rawMarkdown = `MINDMAP_MARKDOWN`;
+    // Give autoloader time to finish, then grab the mm instance
+    let _mm = null;
 
-    let mm = null;
-
-    window.markmap.autoLoader.onReady = async function() {
-      try {
-        const { Markmap, loadCSS, loadJS }  = window.markmap;
-        const { Transformer }               = window.markmap;
-
-        const transformer = new Transformer();
-        const { root, features } = transformer.transform(rawMarkdown);
-
-        const { styles, scripts } = transformer.getUsedAssets(features);
-        if (styles?.length)  loadCSS(styles);
-        if (scripts?.length) await loadJS(scripts, { getMarkmap: () => window.markmap });
-
-        document.getElementById("loading").style.display = "none";
-        document.getElementById("toolbar").style.display = "flex";
-
-        mm = Markmap.create("#mindmap", {
-          color: (node) => {
-            const palette = ["#7c3aed","#6d28d9","#818cf8","#a78bfa","#c4b5fd"];
-            return palette[node.depth % palette.length];
-          },
-          duration:  400,
-          maxWidth:  280,
-          zoom:      true,
-          pan:       true,
-          initialExpandLevel: 2,
-        }, root);
-
-      } catch(err) {
-        document.getElementById("loading").textContent =
-          "❌ โหลด mindmap ไม่ได้: " + err.message;
-      }
-    };
-
-    function expandAll() {
-      if (mm) {
-        mm.setData(mm.state.data);
-        mm.fit();
-      }
+    function _getMMInstance() {
+      // markmap-autoloader stores instances on the SVG element
+      const svg = document.querySelector('svg.markmap');
+      if (!svg) return null;
+      return svg.__markmap || null;
     }
 
-    function collapseAll() {
-      if (mm) {
-        function collapse(node) {
-          if (node.children?.length) {
-            node.payload = { ...node.payload, fold: 1 };
-            node.children.forEach(collapse);
-          }
-        }
-        const data = mm.state.data;
-        data.children?.forEach(collapse);
-        mm.setData(data);
+    function fitMM() {
+      const mm = _getMMInstance();
+      if (mm) mm.fit();
+    }
+
+    function expandMM() {
+      const mm = _getMMInstance();
+      if (!mm) return;
+      function expand(node) {
+        if (node.payload) node.payload.fold = 0;
+        (node.children || []).forEach(expand);
       }
+      expand(mm.state.data);
+      mm.setData(mm.state.data);
+      mm.fit();
+    }
+
+    function collapseMM() {
+      const mm = _getMMInstance();
+      if (!mm) return;
+      function collapse(node, depth) {
+        if (depth > 1 && node.children?.length) node.payload = { ...node.payload, fold: 1 };
+        (node.children || []).forEach(c => collapse(c, depth + 1));
+      }
+      collapse(mm.state.data, 0);
+      mm.setData(mm.state.data);
+      mm.fit();
     }
   </script>
 </body>
